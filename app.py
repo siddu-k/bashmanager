@@ -29,8 +29,9 @@ MAX_EXECUTION_LOG_FILES = 250
 LOG_RETENTION_DAYS = 30
 MAX_HISTORY_EXCERPT_CHARS = 2000
 
-# Store running/completed processes for resource monitoring
-processes = {}
+# Thread-safe registry for running script processes (keyed by run_id)
+active_processes = {}
+active_processes_lock = threading.Lock()
 
 
 def _ensure_log_dirs():
@@ -519,6 +520,44 @@ def _track_metrics(proc, result):
     result['mem'] = round(max_mem_mb, 1)
 
 
+def _terminate_process_tree(proc, timeout=3):
+    if proc.poll() is not None:
+        return
+
+    try:
+        parent = psutil.Process(proc.pid)
+        processes = [parent] + parent.children(recursive=True)
+        for process in processes:
+            try:
+                process.terminate()
+            except psutil.NoSuchProcess:
+                pass
+
+        _, alive = psutil.wait_procs(processes, timeout=timeout)
+        for process in alive:
+            try:
+                process.kill()
+            except psutil.NoSuchProcess:
+                pass
+
+        if alive:
+            psutil.wait_procs(alive, timeout=2)
+    except psutil.NoSuchProcess:
+        pass
+    except Exception:
+        try:
+            proc.terminate()
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=1)
+
+
 @app.route('/api/scripts/run', methods=['POST'])
 def run_script():
     data = request.json
@@ -562,16 +601,24 @@ def run_script():
                 universal_newlines=True
             )
 
+            with active_processes_lock:
+                active_processes[run_id] = {
+                    'process': proc,
+                    'execution': execution,
+                    'start_time': start_time,
+                    'status': 'running',
+                    'aborted': False,
+                }
+
             metrics = {'cpu': 0.0, 'mem': 0.0}
             t_metrics = threading.Thread(target=_track_metrics, args=(proc, metrics))
             t_metrics.start()
 
             _append_execution_line(execution, 'system', f'Starting script execution... (ID: {run_id})')
-            yield f"data: {json.dumps({'type': 'system', 'content': f'Starting script execution... (ID: {run_id})\n'})}\n\n"
+            yield f"data: {json.dumps({'type': 'started', 'run_id': run_id, 'content': f'Starting script execution... (ID: {run_id})\n'})}\n\n"
 
             for line in iter(proc.stdout.readline, ''):
                 if line:
-                    # Heuristic to detect errors in the combined stream
                     l_lower = line.lower()
                     msg_type = 'stdout'
                     if any(err in l_lower for err in ['error:', 'failed:', 'not found', 'denied', 'no such file']):
@@ -582,31 +629,61 @@ def run_script():
             proc.stdout.close()
             proc.wait(timeout=10)
             t_metrics.join(timeout=1)
-            
+
             end_time = time.time()
             elapsed = end_time - start_time
-            system_mem = psutil.virtual_memory().total / (1024 * 1024)
-            mem_percent = (metrics['mem'] / system_mem * 100) if system_mem > 0 else 0
 
-            resource_info = {
-                'execution_time': round(elapsed, 3),
-                'execution_time_formatted': _format_time(elapsed),
-                'exit_code': proc.returncode,
-                'cpu_percent': metrics['cpu'],
-                'memory_used_mb': metrics['mem'],
-                'memory_total_mb': round(system_mem, 1),
-                'memory_percent': round(mem_percent, 2),
-            }
+            was_aborted = False
+            with active_processes_lock:
+                entry = active_processes.get(run_id)
+                if entry and entry.get('aborted'):
+                    was_aborted = True
 
-            _append_execution_line(execution, 'system', f'Script completed with exit code {proc.returncode}')
+            if was_aborted:
+                _append_execution_line(execution, 'system', f'Script aborted (exit code {proc.returncode})')
+                _finalize_execution(
+                    execution,
+                    success=False,
+                    exit_code=proc.returncode if proc.returncode is not None else -15,
+                    duration_seconds=elapsed,
+                    error_message='Script aborted by user',
+                )
+                yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': 'Script aborted\n'})}\n\n"
+            else:
+                system_mem = psutil.virtual_memory().total / (1024 * 1024)
+                mem_percent = (metrics['mem'] / system_mem * 100) if system_mem > 0 else 0
+
+                resource_info = {
+                    'execution_time': round(elapsed, 3),
+                    'execution_time_formatted': _format_time(elapsed),
+                    'exit_code': proc.returncode,
+                    'cpu_percent': metrics['cpu'],
+                    'memory_used_mb': metrics['mem'],
+                    'memory_total_mb': round(system_mem, 1),
+                    'memory_percent': round(mem_percent, 2),
+                }
+
+                _append_execution_line(execution, 'system', f'Script completed with exit code {proc.returncode}')
+                _finalize_execution(
+                    execution,
+                    success=proc.returncode == 0,
+                    exit_code=proc.returncode,
+                    duration_seconds=elapsed,
+                    resources=resource_info,
+                )
+                yield f"data: {json.dumps({'type': 'metrics', 'resources': resource_info, 'exit_code': proc.returncode, 'success': proc.returncode == 0})}\n\n"
+        except subprocess.TimeoutExpired:
+            if proc:
+                _terminate_process_tree(proc)
+            _append_execution_line(execution, 'error', '❌ Execution timed out')
             _finalize_execution(
                 execution,
-                success=proc.returncode == 0,
-                exit_code=proc.returncode,
-                duration_seconds=elapsed,
-                resources=resource_info,
+                success=False,
+                exit_code=-1,
+                duration_seconds=time.time() - start_time,
+                error_message='Process timed out',
             )
-            yield f"data: {json.dumps({'type': 'metrics', 'resources': resource_info, 'exit_code': proc.returncode, 'success': proc.returncode == 0})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'content': '❌ Execution timed out\n'})}\n\n"
         except Exception as e:
             _append_execution_line(execution, 'error', f'❌ Execution Error: {str(e)}')
             if proc is not None and getattr(proc, 'returncode', None) is not None:
@@ -621,8 +698,34 @@ def run_script():
                 error_message=str(e),
             )
             yield f"data: {json.dumps({'type': 'error', 'content': f'❌ Execution Error: {str(e)}'})}\n\n"
+        finally:
+            with active_processes_lock:
+                if run_id in active_processes:
+                    del active_processes[run_id]
 
     return Response(generate(), mimetype='text/event-stream')
+
+
+@app.route('/api/scripts/kill', methods=['POST'])
+def kill_script():
+    data = request.json or {}
+    run_id = data.get('run_id', '')
+
+    if not run_id:
+        return jsonify({'error': 'run_id is required'}), 400
+
+    with active_processes_lock:
+        entry = active_processes.get(run_id)
+        if not entry:
+            return jsonify({'error': 'No running process found for this run_id'}), 404
+        proc = entry['process']
+        if proc.poll() is not None:
+            return jsonify({'error': 'No running process found for this run_id'}), 404
+        entry['aborted'] = True
+
+    _terminate_process_tree(proc)
+
+    return jsonify({'success': True, 'run_id': run_id})
 
 
 @app.route('/api/exec', methods=['POST'])

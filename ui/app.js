@@ -18,6 +18,7 @@ const API = {
     pr: '/api/git/pr',
     history: '/api/history',
     history_export: '/api/history/export',
+    kill: '/api/scripts/kill',
 };
 
 // ─── State ────────────────────────────────────────────────
@@ -36,7 +37,10 @@ let state = {
     terminals: [1],      // list of terminal IDs
     activeTerminalId: 1,
     nextTerminalId: 2,
+    runningScripts: {},   // { termId: { run_id } }
 };
+
+const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
 
 // ─── SVG Icons ─────────────────────────────────────────────
 const ICONS = {
@@ -165,17 +169,76 @@ async function fetchScriptContent(relPath, password = '') {
     }
 }
 
+function getTerminalBody(termId = state.activeTerminalId) {
+    return document.getElementById(`terminal-body-${termId}`)
+        || (termId === 1 ? document.getElementById('terminal-body') : null);
+}
+
+function updateRunButton() {
+    const btnRun = document.getElementById('btn-run');
+    if (!btnRun) return;
+
+    const running = state.runningScripts[state.activeTerminalId];
+    btnRun.classList.remove('running', 'abort', 'aborting');
+
+    if (running) {
+        btnRun.classList.add(running.aborting ? 'aborting' : 'abort');
+        btnRun.innerHTML = running.aborting
+            ? '<span style="margin-right: 6px;">x</span> Aborting...'
+            : '<span style="margin-right: 6px;">x</span> Abort';
+        btnRun.title = running.aborting ? 'Aborting script' : 'Abort script';
+        btnRun.setAttribute('aria-label', running.aborting ? 'Aborting script' : 'Abort script');
+    } else {
+        btnRun.innerHTML = RUN_BUTTON_IDLE_HTML;
+        btnRun.title = 'Run Script';
+        btnRun.setAttribute('aria-label', 'Run script');
+    }
+}
+
+async function abortScriptRun(termId = state.activeTerminalId) {
+    const running = state.runningScripts[termId];
+    if (!running) return;
+
+    running.abortRequested = true;
+    running.aborting = true;
+    updateRunButton();
+
+    if (!running.run_id || running.killSent) return;
+
+    running.killSent = true;
+    try {
+        const res = await fetch(API.kill, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ run_id: running.run_id }),
+        });
+
+        if (!res.ok && res.status !== 404) {
+            const data = await res.json().catch(() => ({}));
+            notify(data.error || 'Failed to abort script.', 'error');
+        }
+    } catch (e) {
+        notify(`Failed to abort script: ${e.message}`, 'error');
+    }
+}
+
 async function runScript(relPath) {
     const termId = state.activeTerminalId;
-    const btnRun = document.getElementById('btn-run');
+    if (state.runningScripts[termId]) return;
     const runStatus = document.getElementById('run-status');
     const resourcePanel = document.getElementById('resource-panel');
 
-    // Set running state
-    if (btnRun) {
-        btnRun.classList.add('running');
-        btnRun.innerHTML = '<span class="spinner" style="margin-right: 6px;"></span> Running...';
-    }
+    let runId = null;
+
+    state.runningScripts[termId] = {
+        run_id: null,
+        relPath,
+        abortRequested: false,
+        aborting: false,
+        killSent: false,
+    };
+    updateRunButton();
+
     if (termId === state.activeTerminalId) {
         runStatus.textContent = 'Executing...';
         runStatus.className = 'run-status running';
@@ -183,7 +246,6 @@ async function runScript(relPath) {
     }
 
     appendToCli(`$ Running script: ${relPath}`, 'system', termId);
-    // Mirror to debugger
     if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('info', `▶ Running script: ${relPath}`, 'script');
 
     try {
@@ -201,6 +263,15 @@ async function runScript(relPath) {
                 runStatus.className = 'run-status error';
             }
             return;
+        }
+
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || `Script run failed with HTTP ${res.status}`);
+        }
+
+        if (!res.body) {
+            throw new Error('Script run did not return a stream');
         }
 
         const reader = res.body.getReader();
@@ -222,13 +293,30 @@ async function runScript(relPath) {
                     try {
                         const data = JSON.parse(chunk.substring(6));
 
-                        if (data.type === 'stdout' || data.type === 'error' || data.type === 'system') {
+                        if (data.type === 'started') {
+                            runId = data.run_id;
+                            const running = state.runningScripts[termId];
+                            if (running) {
+                                running.run_id = runId;
+                                if (running.abortRequested) abortScriptRun(termId);
+                            }
+                            updateRunButton();
+                            appendToCli(data.content, 'system', termId);
+                        } else if (data.type === 'stdout' || data.type === 'error' || data.type === 'system') {
                             let cssClass = data.type === 'stdout' ? 'stdout' : (data.type === 'system' ? 'system' : 'stderr');
                             appendToCli(data.content, cssClass, termId);
-                            // Mirror stdout/stderr to debugger
                             if (typeof DebuggerConsole !== 'undefined') {
                                 const dbgType = data.type === 'error' ? 'error' : 'log';
                                 DebuggerConsole.addEntry(dbgType, data.content.trimEnd(), relPath);
+                            }
+                        } else if (data.type === 'aborted') {
+                            appendToCli(data.content, 'error', termId);
+                            if (typeof DebuggerConsole !== 'undefined') {
+                                DebuggerConsole.addEntry('error', `⏹ Script aborted (ID: ${data.run_id})`, 'script');
+                            }
+                            if (termId === state.activeTerminalId) {
+                                runStatus.textContent = 'Aborted';
+                                runStatus.className = 'run-status error';
                             }
                         } else if (data.type === 'metrics') {
                             if (data.success) {
@@ -263,18 +351,19 @@ async function runScript(relPath) {
             }
         }
     } catch (err) {
-        appendToCli(`Error executing script: ${err.message}`, 'stderr', termId);
-        if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('error', `Script error: ${err.message}`, 'script');
-        if (termId === state.activeTerminalId) {
-            runStatus.textContent = 'Error';
-            runStatus.className = 'run-status error';
+        const abortRequested = Boolean(state.runningScripts[termId]?.abortRequested);
+        if (!abortRequested) {
+            appendToCli(`Error executing script: ${err.message}`, 'stderr', termId);
+            if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('error', `Script error: ${err.message}`, 'script');
+            if (termId === state.activeTerminalId) {
+                runStatus.textContent = 'Error';
+                runStatus.className = 'run-status error';
+            }
         }
     } finally {
         refreshExecutionHistoryIfVisible();
-        if (btnRun) {
-            btnRun.classList.remove('running');
-            btnRun.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
-        }
+        delete state.runningScripts[termId];
+        updateRunButton();
     }
 }
 
@@ -675,7 +764,7 @@ async function manageLock(relPath, oldPass, newPass) {
 // ─── CLI Helpers ───
 
 function appendToCli(text, className = '', termId = state.activeTerminalId) {
-    const termBody = document.getElementById(`terminal-body-${termId}`) || document.getElementById('terminal-body');
+    const termBody = getTerminalBody(termId);
     if (!termBody) return;
 
     const welcomeEl = termBody.querySelector('.cli-welcome');
@@ -691,7 +780,7 @@ function appendToCli(text, className = '', termId = state.activeTerminalId) {
 }
 
 function clearCli() {
-    const termBody = document.getElementById(`terminal-body-${state.activeTerminalId}`) || document.getElementById('terminal-body');
+    const termBody = getTerminalBody(state.activeTerminalId);
     if (termBody) {
         termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
     }
@@ -741,9 +830,21 @@ function switchTerminal(id) {
     if (activeTab) activeTab.classList.add('active');
 
     document.querySelectorAll('.cli-body').forEach(b => b.style.display = 'none');
-    const activeBody = document.getElementById(`terminal-body-${id}`) || (id === 1 ? document.getElementById('terminal-body') : null);
+    const activeBody = getTerminalBody(id);
     if (activeBody) activeBody.style.display = 'block';
 
+    const runStatus = document.getElementById('run-status');
+    const resourcePanel = document.getElementById('resource-panel');
+    const running = state.runningScripts[id];
+    if (running) {
+        runStatus.textContent = running.aborting ? 'Aborting...' : 'Executing...';
+        runStatus.className = 'run-status running';
+        resourcePanel.style.display = 'none';
+    } else {
+        runStatus.textContent = '';
+        runStatus.className = 'run-status';
+    }
+    updateRunButton();
     highlightTerminalSearch();
 }
 
@@ -754,7 +855,7 @@ function closeTerminal(id) {
     const tabBtn = document.getElementById(`tab-btn-${id}`) || document.querySelector(`.cli-tab[data-id="${id}"]`);
     if (tabBtn) tabBtn.remove();
 
-    const bodyContainer = document.getElementById(`terminal-body-${id}`) || (id === 1 ? document.getElementById('terminal-body') : null);
+    const bodyContainer = getTerminalBody(id);
     if (bodyContainer) bodyContainer.remove();
 
     if (state.activeTerminalId === id) {
@@ -1008,6 +1109,7 @@ async function selectScript(relPath) {
     // Toolbar states
     const btnFav = document.getElementById('btn-fav');
     if (btnFav) btnFav.classList.toggle('active', script.favorite);
+    updateRunButton();
 
     const btnLock = document.getElementById('btn-lock');
     if (btnLock) {
@@ -1205,7 +1307,15 @@ function bindEvents() {
 
     // Script Details Actions
     const btnRun = document.getElementById('btn-run');
-    if (btnRun) btnRun.addEventListener('click', () => { if (state.activeScript) runScript(state.activeScript); });
+    if (btnRun) {
+        btnRun.addEventListener('click', () => {
+            if (state.runningScripts[state.activeTerminalId]) {
+                abortScriptRun(state.activeTerminalId);
+            } else if (state.activeScript) {
+                runScript(state.activeScript);
+            }
+        });
+    }
 
     const btnEdit = document.getElementById('btn-edit');
     if (btnEdit) btnEdit.addEventListener('click', () => { if (state.activeScript) openModal('edit'); });

@@ -270,8 +270,20 @@ body {
 .btn-run.running {
     background: var(--accent-orange);
     border-color: var(--accent-orange);
-    pointer-events: none;
     animation: btn-pulse 1.5s infinite;
+}
+
+.btn-run.abort,
+.btn-run.aborting {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+    animation: btn-pulse 1.5s infinite;
+}
+
+.btn-run.abort:hover,
+.btn-run.aborting:hover {
+    background: #dc2626;
+    border-color: #dc2626;
 }
 
 @keyframes btn-pulse {
