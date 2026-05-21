@@ -1054,7 +1054,7 @@ def run_script():
         proc = None
         run_path = full_path
         start_time = time.time()
-                try:
+        try:
             # Instrument script content for progress tracking
             try:
                 with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
