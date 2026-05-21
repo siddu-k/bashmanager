@@ -48,6 +48,24 @@ MAX_HISTORY_EXCERPT_CHARS = 2000
 active_processes = {}
 active_processes_lock = threading.Lock()
 
+file_lock = threading.Lock()
+
+def atomic_json_write(path, data):
+    with file_lock:
+        dir_name = os.path.dirname(path) or "."
+
+        with tempfile.NamedTemporaryFile(
+            mode='w',
+            delete=False,
+            dir=dir_name,
+            encoding='utf-8'
+        ) as tmp_file:
+
+            json.dump(data, tmp_file, indent=2)
+            temp_name = tmp_file.name
+
+        os.replace(temp_name, path)
+
 
 def validate_workspace_snapshot(data):
     if not isinstance(data, dict):
@@ -102,8 +120,7 @@ def save_workspace_state(data):
     }
 
     try:
-        with open(WORKSPACE_STATE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
+        atomic_json_write(WORKSPACE_STATE_FILE, payload)
         return True, None
     except Exception as e:
         return False, str(e)
@@ -410,10 +427,7 @@ def save_command_history(command):
 
     # Keep latest 200
     history = history[:200]
-
-    with open(COMMAND_HISTORY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(history, f, indent=2)
-
+    atomic_json_write(COMMAND_HISTORY_FILE, history)
 
 def _load_history_entries(query='', status='all', kind='all', limit=200):
     entries = _read_jsonl(HISTORY_FILE)
@@ -613,8 +627,7 @@ def get_command_history():
 def clear_command_history():
     try:
         # Overwrite the history JSON file with an empty array
-        with open(COMMAND_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump([], f, indent=2)
+        atomic_json_write(COMMAND_HISTORY_FILE, [])
             
         return jsonify({
             'success': True,
@@ -804,8 +817,7 @@ def save_workspace_profile():
     }
 
     try:
-        with open(profile_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2)
+        atomic_json_write(profile_path, payload)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -1026,10 +1038,10 @@ def run_script():
     data = request.json
     rel_path = data.get('path', '')
     password = data.get('password', '')
-    
+
     if not check_lock(rel_path, password):
         return jsonify({'error': 'Locked', 'success': False}), 401
-        
+
     full_path = os.path.join(SCRIPTS_DIR, rel_path)
     full_path = os.path.normpath(full_path)
 
@@ -1042,6 +1054,7 @@ def run_script():
 
     run_id = str(uuid.uuid4())[:8]
     shell_cmd = _find_shell()
+
     execution = _start_execution_record(
         kind='script',
         display_name=rel_path,
@@ -1054,8 +1067,8 @@ def run_script():
         proc = None
         run_path = full_path
         start_time = time.time()
-                try:
-            # Instrument script content for progress tracking
+
+        try:
             try:
                 with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
@@ -1064,22 +1077,29 @@ def run_script():
 
                 if steps:
                     temp_dir = os.path.dirname(full_path)
+
                     temp_fd, temp_path = tempfile.mkstemp(
                         suffix='.sh',
                         prefix='.tmp_run_',
                         dir=temp_dir
                     )
-                    with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='\n') as temp_f:
+
+                    with os.fdopen(
+                        temp_fd,
+                        'w',
+                        encoding='utf-8',
+                        newline='\n'
+                    ) as temp_f:
                         temp_f.write(instrumented_content)
-                    
+
                     run_path = temp_path
+
                 else:
                     run_path = full_path
 
             except Exception:
                 run_path = full_path
 
-            # Use main's Windows support with your run_path
             args = (
                 [shell_cmd, run_path]
                 if shell_cmd != 'cmd.exe'
@@ -1106,63 +1126,145 @@ def run_script():
                 }
 
             metrics = {'cpu': 0.0, 'mem': 0.0}
-            t_metrics = threading.Thread(target=_track_metrics, args=(proc, metrics))
+
+            t_metrics = threading.Thread(
+                target=_track_metrics,
+                args=(proc, metrics)
+            )
+
             t_metrics.start()
 
-            _append_execution_line(execution, 'system', f'Starting script execution... (ID: {run_id})')
-            yield f"data: {json.dumps({'type': 'started', 'run_id': run_id, 'content': f'Starting script execution... (ID: {run_id})\n'})}\n\n"
+            _append_execution_line(
+                execution,
+                'system',
+                f'Starting script execution... (ID: {run_id})'
+            )
+
+            payload = {
+                'type': 'started',
+                'run_id': run_id,
+                'content': f'Starting script execution... (ID: {run_id})\n'
+            }
+
+            yield f"data: {json.dumps(payload)}\n\n"
 
             for line in iter(proc.stdout.readline, ''):
                 if line:
+
                     if run_path != full_path:
                         temp_basename = os.path.basename(run_path)
                         orig_basename = os.path.basename(full_path)
+
                         if temp_basename in line:
-                            line = line.replace(temp_basename, orig_basename)
+                            line = line.replace(
+                                temp_basename,
+                                orig_basename
+                            )
 
                     if '::progress::' in line:
-                        match = re.search(r'::progress::(\d+)::(\d+)::(.*)', line)
+                        match = re.search(
+                            r'::progress::(\d+)::(\d+)::(.*)',
+                            line
+                        )
+
                         if match:
                             step_idx = int(match.group(1))
                             total_steps = int(match.group(2))
                             cmd_text = match.group(3).strip()
-                            yield f"data: {json.dumps({'type': 'progress', 'step': step_idx, 'total': total_steps, 'command': cmd_text})}\n\n"
+
+                            payload = {
+                                'type': 'progress',
+                                'step': step_idx,
+                                'total': total_steps,
+                                'command': cmd_text
+                            }
+
+                            yield f"data: {json.dumps(payload)}\n\n"
                             continue
 
-                    # Heuristic to detect errors in the combined stream
                     l_lower = line.lower()
                     msg_type = 'stdout'
-                    if any(err in l_lower for err in ['error:', 'failed:', 'not found', 'denied', 'no such file']):
+
+                    if any(
+                        err in l_lower
+                        for err in [
+                            'error:',
+                            'failed:',
+                            'not found',
+                            'denied',
+                            'no such file'
+                        ]
+                    ):
                         msg_type = 'error'
-                    _append_execution_line(execution, msg_type, line)
-                    yield f"data: {json.dumps({'type': msg_type, 'content': line})}\n\n"
+
+                    _append_execution_line(
+                        execution,
+                        msg_type,
+                        line
+                    )
+
+                    payload = {
+                        'type': msg_type,
+                        'content': line
+                    }
+
+                    yield f"data: {json.dumps(payload)}\n\n"
 
             proc.stdout.close()
             proc.wait(timeout=10)
+
             t_metrics.join(timeout=1)
 
             end_time = time.time()
             elapsed = end_time - start_time
 
             was_aborted = False
+
             with active_processes_lock:
                 entry = active_processes.get(run_id)
+
                 if entry and entry.get('aborted'):
                     was_aborted = True
 
             if was_aborted:
-                _append_execution_line(execution, 'system', f'Script aborted (exit code {proc.returncode})')
+
+                _append_execution_line(
+                    execution,
+                    'system',
+                    f'Script aborted (exit code {proc.returncode})'
+                )
+
                 _finalize_execution(
                     execution,
                     success=False,
-                    exit_code=proc.returncode if proc.returncode is not None else -15,
+                    exit_code=(
+                        proc.returncode
+                        if proc.returncode is not None
+                        else -15
+                    ),
                     duration_seconds=elapsed,
                     error_message='Script aborted by user',
                 )
-                yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': 'Script aborted\n'})}\n\n"
+
+                payload = {
+                    'type': 'aborted',
+                    'run_id': run_id,
+                    'content': 'Script aborted\n'
+                }
+
+                yield f"data: {json.dumps(payload)}\n\n"
+
             else:
-                system_mem = psutil.virtual_memory().total / (1024 * 1024)
-                mem_percent = (metrics['mem'] / system_mem * 100) if system_mem > 0 else 0
+                system_mem = (
+                    psutil.virtual_memory().total
+                    / (1024 * 1024)
+                )
+
+                mem_percent = (
+                    (metrics['mem'] / system_mem * 100)
+                    if system_mem > 0
+                    else 0
+                )
 
                 resource_info = {
                     'execution_time': round(elapsed, 3),
@@ -1174,7 +1276,12 @@ def run_script():
                     'memory_percent': round(mem_percent, 2),
                 }
 
-                _append_execution_line(execution, 'system', f'Script completed with exit code {proc.returncode}')
+                _append_execution_line(
+                    execution,
+                    'system',
+                    f'Script completed with exit code {proc.returncode}'
+                )
+
                 _finalize_execution(
                     execution,
                     success=proc.returncode == 0,
@@ -1182,11 +1289,23 @@ def run_script():
                     duration_seconds=elapsed,
                     resources=resource_info,
                 )
-                yield f"data: {json.dumps({'type': 'metrics', 'resources': resource_info, 'exit_code': proc.returncode, 'success': proc.returncode == 0})}\n\n"
+
+                payload = {
+                    'type': 'metrics',
+                    'resources': resource_info,
+                    'exit_code': proc.returncode,
+                    'success': proc.returncode == 0
+                }
+
+                yield f"data: {json.dumps(payload)}\n\n"
+
         except subprocess.TimeoutExpired:
+
             was_aborted = False
+
             with active_processes_lock:
                 entry = active_processes.get(run_id)
+
                 if entry and entry.get('aborted'):
                     was_aborted = True
 
@@ -1194,17 +1313,41 @@ def run_script():
                 _terminate_process_tree(proc)
 
             if was_aborted:
-                _append_execution_line(execution, 'system', f'Script aborted (exit code {proc.returncode})')
+
+                _append_execution_line(
+                    execution,
+                    'system',
+                    f'Script aborted (exit code {proc.returncode})'
+                )
+
                 _finalize_execution(
                     execution,
                     success=False,
-                    exit_code=proc.returncode if proc and proc.returncode is not None else -15,
+                    exit_code=(
+                        proc.returncode
+                        if proc and proc.returncode is not None
+                        else -15
+                    ),
                     duration_seconds=time.time() - start_time,
                     error_message='Script aborted by user',
                 )
-                yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': 'Script aborted\n'})}\n\n"
+
+                payload = {
+                    'type': 'aborted',
+                    'run_id': run_id,
+                    'content': 'Script aborted\n'
+                }
+
+                yield f"data: {json.dumps(payload)}\n\n"
+
             else:
-                _append_execution_line(execution, 'error', '❌ Execution timed out')
+
+                _append_execution_line(
+                    execution,
+                    'error',
+                    '❌ Execution timed out'
+                )
+
                 _finalize_execution(
                     execution,
                     success=False,
@@ -1212,13 +1355,27 @@ def run_script():
                     duration_seconds=time.time() - start_time,
                     error_message='Process timed out',
                 )
-                yield f"data: {json.dumps({'type': 'error', 'content': '❌ Execution timed out\n'})}\n\n"
+
+                payload = {
+                    'type': 'error',
+                    'content': '❌ Execution timed out\n'
+                }
+
+                yield f"data: {json.dumps(payload)}\n\n"
+
         except Exception as e:
-            _append_execution_line(execution, 'error', f'❌ Execution Error: {str(e)}')
+
+            _append_execution_line(
+                execution,
+                'error',
+                f'❌ Execution Error: {str(e)}'
+            )
+
             if proc is not None and getattr(proc, 'returncode', None) is not None:
                 exit_code = proc.returncode
             else:
                 exit_code = -1
+
             _finalize_execution(
                 execution,
                 success=False,
@@ -1226,20 +1383,28 @@ def run_script():
                 duration_seconds=time.time() - start_time,
                 error_message=str(e),
             )
-            yield f"data: {json.dumps({'type': 'error', 'content': f'❌ Execution Error: {str(e)}'})}\n\n"
+
+            payload = {
+                'type': 'error',
+                'content': f'❌ Execution Error: {str(e)}'
+            }
+
+            yield f"data: {json.dumps(payload)}\n\n"
+            
         finally:
+
             if 'run_path' in locals() and run_path != full_path:
                 try:
                     if os.path.exists(run_path):
                         os.remove(run_path)
                 except Exception:
                     pass
+
             with active_processes_lock:
                 if run_id in active_processes:
                     del active_processes[run_id]
 
     return Response(generate(), mimetype='text/event-stream')
-
 
 @app.route('/api/scripts/kill', methods=['POST'])
 def kill_script():
@@ -1285,6 +1450,7 @@ def exec_command():
     def generate():
         proc = None
         start_time = time.time()
+        
         try:
             # Need to format for Windows/Linux subshells correctly
             args = [shell_cmd, '-c', command] if shell_cmd != 'cmd.exe' else ['cmd.exe', '/c', command]
@@ -1333,7 +1499,6 @@ def exec_command():
                 error_message=str(e),
             )
             yield f"data: {json.dumps({'type': 'error', 'content': f'❌ Command Error: {str(e)}'})}\n\n"
-
     return Response(generate(), mimetype='text/event-stream')
 
 
