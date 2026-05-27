@@ -41,6 +41,12 @@
             </div>
         </div>
         <div class="header-right">
+      <div class="header-right">
+            <button class="btn-icon" id="theme-toggle-btn" title="Toggle Light/Dark Mode" aria-label="Toggle UI Theme" style="margin-right: 4px; display: flex; align-items: center; justify-content: center;">
+                <svg id="theme-icon-moon" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+                <svg id="theme-icon-sun" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: none;"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m18.36 18.36 1.41 1.41"/><path d="M20 12h2"/><path d="M2 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+            </button>
+
             <button class="btn-icon" id="btn-history" title="Execution History" aria-label="Open execution history">
                 <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
                     stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -49,8 +55,12 @@
                     <path d="M12 3v2" />
                 </svg>
             </button>
-            <button class="btn-icon" id="btn-debugger-toggle" title="Toggle Debugger Console (Ctrl+`)"
-                aria-label="Toggle debugger console">
+            <button
+                id="btn-reliability"
+                class="btn"
+                aria-label="Open reliability dashboard">
+                Reliability
+            </button>
             <button
                 id="btn-analytics"
                 class="btn"
@@ -368,8 +378,7 @@
                                 <span>Edit</span>
                             </button>
                             <!-- NEW FEATURE: The Push/PR button uses an inline onclick handler to bypass event-binding lifecycle issues -->
-                            <button class="btn btn-action" id="btn-pr" title="Push to Git / Raise PR"
-                                onclick="if(typeof state !== 'undefined' && state.activeScript) raisePRFlow(state.activeScript);">
+                            <button class="btn btn-action" id="btn-pr" title="Push to Git / Raise PR">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
                                     fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                     stroke-linejoin="round">
@@ -830,7 +839,87 @@ echo 'Hello World'"></textarea>
                 </div>
             </div>
                 <div id="replay-metadata"></div>
+                <div id="replay-diagnostics" class="replay-diagnostics" hidden role="status" aria-live="polite"></div>
                 <div id="replay-terminal" class="terminal-output"></div>
+        </div>
+    </div>
+
+    <!-- Reliability Dashboard Modal -->
+    <div id="reliability-modal-overlay" class="modal-overlay">
+        <div id="reliability-modal" class="modal reliability-modal" role="dialog" aria-modal="true"
+            aria-labelledby="reliability-modal-title">
+            <div class="modal-header">
+                <div>
+                    <h2 id="reliability-modal-title">Reliability Dashboard</h2>
+                    <p class="reliability-modal-subtitle">
+                        Execution health, failure patterns, trends, and recommendations.
+                        <span id="reliability-updated-at" class="reliability-updated-at">Last updated: —</span>
+                    </p>
+                </div>
+                <div class="reliability-header-actions">
+                    <button class="btn btn-action" id="reliability-refresh-btn" type="button">Refresh</button>
+                    <button class="btn-icon" id="reliability-modal-close" aria-label="Close reliability dashboard">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M18 6 6 18" />
+                            <path d="m6 6 12 12" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-body reliability-modal-body">
+                <div class="reliability-toolbar">
+                    <div class="form-group reliability-search-group">
+                        <label for="reliability-search">Search scripts</label>
+                        <input type="text" id="reliability-search" placeholder="Filter by script name..."
+                            autocomplete="off" spellcheck="false">
+                    </div>
+                    <div class="reliability-filter-group" role="tablist" aria-label="Reliability filters">
+                        <button class="reliability-filter active" data-reliability-filter="all" type="button" role="tab" aria-selected="true">All</button>
+                        <button class="reliability-filter" data-reliability-filter="failing" type="button" role="tab" aria-selected="false">At risk</button>
+                        <button class="reliability-filter" data-reliability-filter="flaky" type="button" role="tab" aria-selected="false">Flaky</button>
+                        <button class="reliability-filter" data-reliability-filter="slow" type="button" role="tab" aria-selected="false">Slow</button>
+                        <button class="reliability-filter" data-reliability-filter="degrading" type="button" role="tab" aria-selected="false">Degrading</button>
+                        <button class="reliability-filter" data-reliability-filter="improving" type="button" role="tab" aria-selected="false">Improving</button>
+                    </div>
+                </div>
+                <div id="reliability-status-banner" class="reliability-status-banner" hidden
+                    aria-live="polite" aria-atomic="true"></div>
+                <div id="reliability-scorecards" class="reliability-scorecards" aria-label="Reliability overview metrics"></div>
+                <section class="reliability-panel reliability-panel-wide reliability-panel--orchestration"
+                    aria-labelledby="reliability-orchestration-heading">
+                    <h3 id="reliability-orchestration-heading">Replay &amp; workspace diagnostics</h3>
+                    <div id="reliability-orchestration" class="reliability-panel-content" role="list"></div>
+                </section>
+                <div class="reliability-panels">
+                    <section class="reliability-panel reliability-panel--failures" aria-labelledby="reliability-failures-heading">
+                        <h3 id="reliability-failures-heading">Failure categories</h3>
+                        <div id="reliability-failure-categories" class="reliability-panel-content" role="list"></div>
+                    </section>
+                    <section class="reliability-panel reliability-panel--flaky" aria-labelledby="reliability-flaky-heading">
+                        <h3 id="reliability-flaky-heading">Flaky scripts</h3>
+                        <div id="reliability-flaky-scripts" class="reliability-panel-content" role="list"></div>
+                    </section>
+                    <section class="reliability-panel reliability-panel--slow" aria-labelledby="reliability-slow-heading">
+                        <h3 id="reliability-slow-heading">Slow scripts</h3>
+                        <div id="reliability-slow-scripts" class="reliability-panel-content" role="list"></div>
+                    </section>
+                    <section class="reliability-panel reliability-panel--trends" aria-labelledby="reliability-trends-heading">
+                        <h3 id="reliability-trends-heading">Trend summaries</h3>
+                        <div id="reliability-trend-summaries" class="reliability-panel-content" role="list"></div>
+                    </section>
+                    <section class="reliability-panel reliability-panel-wide reliability-panel--recommendations"
+                        aria-labelledby="reliability-recommendations-heading">
+                        <h3 id="reliability-recommendations-heading">Recommendations</h3>
+                        <div id="reliability-recommendations" class="reliability-panel-content" role="list"></div>
+                    </section>
+                    <section class="reliability-panel reliability-panel-wide reliability-panel--scripts"
+                        aria-labelledby="reliability-scripts-heading">
+                        <h3 id="reliability-scripts-heading">Scripts</h3>
+                        <div id="reliability-script-list" class="reliability-panel-content" role="list"></div>
+                    </section>
+                </div>
+            </div>
         </div>
     </div>
 

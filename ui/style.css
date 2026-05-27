@@ -2196,6 +2196,581 @@ body.debugger-open #app-main {
     border: 1px solid var(--border-color);
 }
 
+/* ─── Reliability Dashboard ─────────────────────────────── */
+
+.reliability-modal {
+    width: min(1200px, 95vw);
+    max-height: 92vh;
+}
+
+.reliability-modal .modal-body {
+    overflow-y: auto;
+    max-height: calc(92vh - 72px);
+}
+
+.reliability-modal-subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.reliability-updated-at {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    opacity: 0.9;
+}
+
+.reliability-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.reliability-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+    margin-bottom: 16px;
+}
+
+.reliability-search-group {
+    flex: 1;
+    min-width: 200px;
+}
+
+.reliability-filter-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.reliability-filter {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.reliability-filter:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.reliability-filter:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.reliability-filter.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+/* Status banners: loading, error, corrupted/warning */
+.reliability-status-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    transition: opacity 0.2s ease;
+}
+
+.reliability-status-banner p {
+    margin: 0 0 4px;
+}
+
+.reliability-status-banner p:last-child {
+    margin-bottom: 0;
+}
+
+.reliability-status-icon {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    margin-top: 5px;
+    border-radius: 50%;
+}
+
+.reliability-status-banner.loading {
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    color: #93c5fd;
+}
+
+.reliability-status-banner.loading .reliability-status-icon {
+    background: #93c5fd;
+    animation: reliability-pulse 1.2s ease-in-out infinite;
+}
+
+.reliability-status-banner.error {
+    background: rgba(220, 53, 69, 0.12);
+    border: 1px solid rgba(220, 53, 69, 0.35);
+    color: #f8a5a5;
+}
+
+.reliability-status-banner.error .reliability-status-icon {
+    background: #f87171;
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
+}
+
+.reliability-status-banner.warning {
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid rgba(234, 179, 8, 0.4);
+    color: #fde047;
+}
+
+.reliability-status-banner.warning .reliability-status-icon {
+    background: #facc15;
+    box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.2);
+}
+
+.reliability-status-banner.critical {
+    background: rgba(220, 53, 69, 0.18);
+    border: 1px solid rgba(220, 53, 69, 0.5);
+    color: #fecaca;
+}
+
+.reliability-status-banner.critical .reliability-status-icon {
+    background: #ef4444;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.3);
+}
+
+.diagnostic-source-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+/* Scorecards + shared card base */
+.reliability-scorecards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.reliability-card,
+.reliability-scorecard {
+    padding: 16px;
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.reliability-card:hover,
+.reliability-scorecard:hover {
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+
+.reliability-animate-in {
+    animation: reliability-fade-in 0.28s ease forwards;
+}
+
+.reliability-scorecard h4 {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.reliability-scorecard .value {
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+
+.reliability-scorecard.score-good {
+    border-color: rgba(34, 197, 94, 0.45);
+}
+
+.reliability-scorecard.score-warn {
+    border-color: rgba(234, 179, 8, 0.45);
+}
+
+.reliability-scorecard.score-bad {
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+.reliability-scorecard.is-loading {
+    pointer-events: none;
+}
+
+.reliability-skeleton {
+    border-radius: 4px;
+    background: linear-gradient(
+        90deg,
+        var(--bg-tertiary, #1a1d24) 0%,
+        rgba(255, 255, 255, 0.06) 50%,
+        var(--bg-tertiary, #1a1d24) 100%
+    );
+    background-size: 200% 100%;
+    animation: reliability-shimmer 1.4s ease-in-out infinite;
+}
+
+.reliability-skeleton-label {
+    height: 12px;
+    width: 60%;
+    margin-bottom: 10px;
+}
+
+.reliability-skeleton-value {
+    height: 28px;
+    width: 45%;
+}
+
+/* Panels */
+.reliability-panels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.reliability-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 14px;
+    transition: border-color 0.2s ease;
+}
+
+.reliability-panel--trends {
+    border-top: 2px solid rgba(59, 130, 246, 0.45);
+}
+
+.reliability-panel--failures {
+    border-top: 2px solid rgba(239, 68, 68, 0.4);
+}
+
+.reliability-panel--recommendations {
+    border-top: 2px solid rgba(234, 179, 8, 0.4);
+}
+
+.reliability-panel--orchestration {
+    border-top: 2px solid rgba(148, 163, 184, 0.45);
+    margin-bottom: 14px;
+}
+
+.diagnostic-indicator-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.diagnostic-pill {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    border: 1px solid transparent;
+}
+
+.diagnostic-pill.ok {
+    background: rgba(34, 197, 94, 0.15);
+    color: #86efac;
+    border-color: rgba(34, 197, 94, 0.35);
+}
+
+.diagnostic-pill.warn {
+    background: rgba(234, 179, 8, 0.15);
+    color: #fde047;
+    border-color: rgba(234, 179, 8, 0.35);
+}
+
+.diagnostic-pill.error {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.35);
+}
+
+.diagnostic-replay-unstable {
+    border-left: 3px solid rgba(249, 115, 22, 0.55);
+}
+
+.diagnostic-corrupted {
+    border-left: 3px solid rgba(239, 68, 68, 0.55);
+}
+
+.diagnostic-workspace {
+    border-left: 3px solid rgba(234, 179, 8, 0.5);
+}
+
+.replay-diagnostics {
+    margin: 10px 14px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.replay-diagnostics.warning {
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid rgba(234, 179, 8, 0.35);
+    color: #fde047;
+}
+
+.replay-diagnostics-reasons {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.history-diagnostic-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    background: rgba(249, 115, 22, 0.2);
+    color: #fdba74;
+}
+
+.reliability-panel-wide {
+    grid-column: 1 / -1;
+}
+
+.reliability-panel h3 {
+    font-size: 13px;
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.reliability-panel-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 220px;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+}
+
+.reliability-panel-content:focus-within {
+    outline: none;
+}
+
+/* List cards */
+.reliability-item {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--bg-tertiary, #1a1d24);
+    border: 1px solid var(--border-color);
+    font-size: 13px;
+    list-style: none;
+    transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.reliability-item[role="listitem"] {
+    display: block;
+}
+
+.reliability-item:hover {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.reliability-item-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+    flex-wrap: wrap;
+}
+
+.reliability-item-meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+/* Badges: priority, trend, score */
+.reliability-badge,
+.failure-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+}
+
+.reliability-badge.critical,
+.reliability-recommendation--critical { --rec-accent: #ef4444; }
+.reliability-badge.high,
+.reliability-recommendation--high { --rec-accent: #f97316; }
+.reliability-badge.medium,
+.reliability-recommendation--medium { --rec-accent: #eab308; }
+.reliability-badge.info,
+.reliability-recommendation--info { --rec-accent: #3b82f6; }
+
+.reliability-badge.critical { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+.reliability-badge.high { background: rgba(249, 115, 22, 0.2); color: #fdba74; }
+.reliability-badge.medium { background: rgba(234, 179, 8, 0.2); color: #fde047; }
+.reliability-badge.info { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+
+.reliability-badge.trend-improving { background: rgba(34, 197, 94, 0.2); color: #86efac; }
+.reliability-badge.trend-degrading { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+.reliability-badge.trend-stable { background: rgba(148, 163, 184, 0.2); color: #cbd5e1; }
+
+.reliability-badge.score-good { background: rgba(34, 197, 94, 0.2); color: #86efac; }
+.reliability-badge.score-warn { background: rgba(234, 179, 8, 0.2); color: #fde047; }
+.reliability-badge.score-bad { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+
+.reliability-badge.indicator-flaky { background: rgba(249, 115, 22, 0.22); color: #fdba74; }
+.reliability-badge.indicator-slow { background: rgba(234, 179, 8, 0.22); color: #fde047; }
+.reliability-badge.indicator-regressed {
+    background: rgba(239, 68, 68, 0.18);
+    color: #fca5a5;
+}
+
+/* Failure type badges */
+.failure-badge--permission_error { background: rgba(168, 85, 247, 0.2); color: #d8b4fe; }
+.failure-badge--dependency_error { background: rgba(59, 130, 246, 0.2); color: #93c5fd; }
+.failure-badge--timeout { background: rgba(234, 179, 8, 0.2); color: #fde047; }
+.failure-badge--shell_error { background: rgba(249, 115, 22, 0.2); color: #fdba74; }
+.failure-badge--missing_file { background: rgba(148, 163, 184, 0.25); color: #e2e8f0; }
+.failure-badge--interrupted { background: rgba(100, 116, 139, 0.25); color: #cbd5e1; }
+.failure-badge--unknown_failure { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+
+.reliability-failure-card {
+    border-left: 3px solid rgba(239, 68, 68, 0.55);
+}
+
+/* Trend cards */
+.reliability-trend-card {
+    border-left: 3px solid rgba(59, 130, 246, 0.5);
+}
+
+.reliability-trend-card.trend-improving {
+    border-left-color: rgba(34, 197, 94, 0.65);
+}
+
+.reliability-trend-card.trend-degrading {
+    border-left-color: rgba(239, 68, 68, 0.65);
+}
+
+/* Recommendation blocks */
+.reliability-recommendation {
+    border-left: 3px solid var(--rec-accent, #3b82f6);
+    padding-left: 12px;
+}
+
+.reliability-recommendation .reliability-item-head {
+    margin-bottom: 6px;
+}
+
+/* Script rows */
+.reliability-script-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto minmax(100px, auto);
+    gap: 10px;
+    align-items: center;
+}
+
+.reliability-script-row .script-name {
+    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.reliability-script-row .reliability-script-stats {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+/* Empty + loading states */
+.reliability-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 52px;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px dashed var(--border-color);
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-align: center;
+    font-style: italic;
+}
+
+.reliability-empty--loading {
+    border-style: solid;
+    background: rgba(59, 130, 246, 0.05);
+    animation: reliability-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes reliability-fade-in {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes reliability-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+}
+
+@keyframes reliability-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.55; }
+}
+
+@media (max-width: 900px) {
+    .reliability-panels {
+        grid-template-columns: 1fr;
+    }
+    .reliability-script-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+    }
+    .reliability-script-row .reliability-script-stats {
+        text-align: left;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .reliability-animate-in,
+    .reliability-skeleton,
+    .reliability-status-banner.loading .reliability-status-icon,
+    .reliability-empty--loading {
+        animation: none;
+    }
+    .reliability-card:hover,
+    .reliability-scorecard:hover {
+        transform: none;
+    }
+}
+
 /* ─── Progress Tracker Panel ───────────────────────────── */
 .progress-tracker-panel {
     background: var(--bg-secondary);
@@ -2286,7 +2861,7 @@ body.debugger-open #app-main {
     background: var(--accent);
 }
 
-.progress-tracker-status.failed::before {D
+.progress-tracker-status.failed::before {
     background: var(--accent-red);
 }
 /* ─── Workspace Recovery ───────────────── */
@@ -2341,3 +2916,65 @@ body.debugger-open #app-main {
     color: var(--text-secondary);
     opacity: 0.8;
 }
+/* ─── LIGHT THEME OVERRIDES ─── */
+body.light-theme {
+    background-color: #f8f9fa !important;
+    color: #212529 !important;
+    --border-color: #dee2e6;
+}
+
+body.light-theme #app-header {
+    background-color: #ffffff !important;
+    border-bottom: 1px solid #dee2e6 !important;
+}
+
+body.light-theme #app-header h1 {
+    color: #212529 !important;
+}
+
+body.light-theme #sidebar {
+    background-color: #e9ecef !important;
+    border-right: 1px solid #dee2e6 !important;
+}
+
+body.light-theme .sidebar-search-wrapper input {
+    background: #ffffff !important;
+    color: #212529 !important;
+    border: 1px solid #ced4da !important;
+}
+
+body.light-theme #cli-area {
+    background-color: #ffffff !important;
+}
+
+body.light-theme .cli-header {
+    background-color: #f1f3f5 !important;
+    border-bottom: 1px solid #dee2e6 !important;
+    color: #212529 !important;
+}
+
+body.light-theme .cli-body {
+    background-color: #ffffff !important;
+    color: #212529 !important;
+}
+
+body.light-theme .cli-welcome-text {
+    color: #495057 !important;
+}
+
+body.light-theme #cli-input {
+    background-color: #f1f3f5 !important;
+    color: #212529 !important;
+    border: 1px solid #ced4da !important;
+}
+
+body.light-theme #analysis-panel {
+    background-color: #e9ecef !important;
+    border-left: 1px solid #dee2e6 !important;
+    color: #212529 !important;
+}
+
+body.light-theme .analysis-empty h3 {
+    color: #212529 !important;
+}
+/* ───────────────────────────── */

@@ -19,6 +19,11 @@ const API = {
     history: '/api/history',
     history_export: '/api/history/export',
     kill: '/api/scripts/kill',
+    reliability_summary: '/api/reliability/summary',
+    reliability_failures: '/api/reliability/failures',
+    reliability_trends: '/api/reliability/trends',
+    reliability_recommendations: '/api/reliability/recommendations',
+    reliability_diagnostics: '/api/reliability/diagnostics',
 };
 
 // ─── State ────────────────────────────────────────────────
@@ -46,7 +51,7 @@ let state = {
         index: 0,
         speed: 1
     },
-    unlockedScripts: {}, // stores valid passwords for locked scripts: { "path": "pass" }
+    unlockedScripts: {}, // unlock flags only: { "path": true }
     terminals: [1],      // list of terminal IDs
     activeTerminalId: 1,
     nextTerminalId: 2,
@@ -58,7 +63,52 @@ let state = {
     sessionId: null,
     lastSaveTimestamp: 0,
     runningScripts: {},  // termId -> { step, total, command, status }
+    reliabilitySummary: null,
+    reliabilityFailures: null,
+    reliabilityTrends: null,
+    reliabilityRecommendations: [],
+    reliabilityLoading: false,
+    reliabilityError: null,
+    reliabilityFilter: 'all',
+    reliabilitySearch: '',
+    reliabilityDiagnostics: null,
 };
+
+const unlockCredentials = new Map();
+
+function isScriptUnlocked(relPath) {
+    return !!state.unlockedScripts[relPath];
+}
+
+function getUnlockPassword(relPath) {
+    return unlockCredentials.get(relPath) || '';
+}
+
+function markScriptUnlocked(relPath, password) {
+    state.unlockedScripts[relPath] = true;
+    if (password) unlockCredentials.set(relPath, password);
+}
+
+function clearScriptUnlock(relPath) {
+    delete state.unlockedScripts[relPath];
+    unlockCredentials.delete(relPath);
+}
+
+function serializeUnlockedScripts() {
+    const out = {};
+    for (const path of Object.keys(state.unlockedScripts)) {
+        if (state.unlockedScripts[path]) out[path] = true;
+    }
+    return out;
+}
+
+function restoreUnlockedScripts(raw = {}) {
+    state.unlockedScripts = {};
+    for (const [path, val] of Object.entries(raw)) {
+        if (val) state.unlockedScripts[path] = true;
+    }
+    unlockCredentials.clear();
+}
 
 const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
 
@@ -82,6 +132,41 @@ const ICONS = {
 
 function getCategoryIcon(name) {
     return ICONS[name.toLowerCase()] || ICONS.default;
+}
+
+// Register global lifecycle cleanup listeners exactly once
+if (!window.__devshell_lifecycle_registered) {
+    window.__devshell_lifecycle_registered = true;
+
+    const cleanupAllScripts = () => {
+        for (const termId of Object.keys(state.runningScripts)) {
+            const running = state.runningScripts[termId];
+            if (running) {
+                if (running.controller && !running.controller.signal.aborted) {
+                    try {
+                        running.controller.abort();
+                    } catch (_) {}
+                }
+                if (running.run_id) {
+                    fetch(API.kill, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ run_id: running.run_id }),
+                        keepalive: true
+                    }).catch(() => {});
+                }
+                cleanupRunningScript(termId);
+            }
+        }
+    };
+
+    window.addEventListener('beforeunload', cleanupAllScripts);
+    window.addEventListener('pagehide', cleanupAllScripts);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            cleanupAllScripts();
+        }
+    });
 }
 
 // ─── Init ──────────────────────────────────────────────────
@@ -129,6 +214,653 @@ async function openAnalytics() {
         console.error(err);
         notify(`Analytics failed: ${err.message}`, 'error');
     }
+}
+
+// ─── Reliability Dashboard ─────────────────────────────────
+
+const RELIABILITY_SUMMARY_VERSION = 1;
+
+async function fetchReliabilityApi(url) {
+    const res = await fetch(url);
+    let payload;
+    try {
+        payload = await res.json();
+    } catch {
+        throw new Error('Invalid reliability API response');
+    }
+    if (!payload.success) {
+        throw new Error(payload.error || `Request failed (${res.status})`);
+    }
+    return payload.data;
+}
+
+async function loadReliabilityDashboard(refresh = false) {
+    state.reliabilityLoading = true;
+    state.reliabilityError = null;
+    renderReliabilityDashboard();
+
+    const summaryUrl = refresh
+        ? `${API.reliability_summary}?refresh=1`
+        : API.reliability_summary;
+
+    try {
+        const [summary, failures, trends, recommendationsPayload] = await Promise.all([
+            fetchReliabilityApi(summaryUrl),
+            fetchReliabilityApi(API.reliability_failures),
+            fetchReliabilityApi(API.reliability_trends),
+            fetchReliabilityApi(API.reliability_recommendations),
+        ]);
+
+        state.reliabilitySummary = summary;
+        state.reliabilityFailures = failures;
+        state.reliabilityTrends = trends;
+        state.reliabilityRecommendations = recommendationsPayload.recommendations || [];
+        state.reliabilityDiagnostics = summary.diagnostics || null;
+        if (summary.severity && state.reliabilityDiagnostics) {
+            state.reliabilityDiagnostics.severity = state.reliabilityDiagnostics.severity || summary.severity;
+        }
+        if (summary.staleness && state.reliabilityDiagnostics) {
+            state.reliabilityDiagnostics.staleness = state.reliabilityDiagnostics.staleness || summary.staleness;
+        }
+        if (!state.reliabilityDiagnostics) {
+            try {
+                state.reliabilityDiagnostics = await fetchReliabilityApi(API.reliability_diagnostics);
+            } catch (diagErr) {
+                console.warn('Orchestration diagnostics unavailable:', diagErr);
+            }
+        }
+    } catch (err) {
+        console.error('Reliability dashboard load failed:', err);
+        state.reliabilityError = err.message || 'Failed to load reliability data';
+        notify(`Reliability: ${state.reliabilityError}`, 'error');
+    } finally {
+        state.reliabilityLoading = false;
+        renderReliabilityDashboard();
+    }
+}
+
+function getReliabilityScoreClass(score) {
+    if (score >= 80) return 'score-good';
+    if (score >= 50) return 'score-warn';
+    return 'score-bad';
+}
+
+function getReliabilityTrendDirection(row) {
+    if (!row) return 'stable';
+    if (typeof row.trend === 'string') return row.trend;
+    if (row.trend_summary?.direction) return row.trend_summary.direction;
+    if (row.trend?.direction) return row.trend.direction;
+    return 'stable';
+}
+
+function getReliabilityFailureRate(row) {
+    const total = row.total_runs ?? 0;
+    if (!total) return 0;
+    return ((row.failures ?? 0) / total) * 100;
+}
+
+function sortReliabilityByLowestScore(rows) {
+    return [...rows].sort(
+        (a, b) => (a.reliability_score ?? 100) - (b.reliability_score ?? 100)
+            || getReliabilityFailureRate(b) - getReliabilityFailureRate(a),
+    );
+}
+
+function sortReliabilityByHighestFailureRate(rows) {
+    return [...rows].sort(
+        (a, b) => getReliabilityFailureRate(b) - getReliabilityFailureRate(a)
+            || (a.reliability_score ?? 100) - (b.reliability_score ?? 100),
+    );
+}
+
+function sortReliabilityBySlowest(rows) {
+    return [...rows].sort(
+        (a, b) => (b.average_duration ?? 0) - (a.average_duration ?? 0)
+            || (b.slow_executions ?? 0) - (a.slow_executions ?? 0),
+    );
+}
+
+function sortReliabilityByFlaky(rows) {
+    return [...rows].sort(
+        (a, b) => (b.flaky_executions ?? 0) - (a.flaky_executions ?? 0)
+            || (b.flaky?.count ?? 0) - (a.flaky?.count ?? 0),
+    );
+}
+
+function sortReliabilityTrendRows(rows) {
+    const trendRank = { degrading: 0, stable: 1, improving: 2 };
+    return [...rows].sort((a, b) => {
+        const aTrend = getReliabilityTrendDirection(a);
+        const bTrend = getReliabilityTrendDirection(b);
+        const rankDiff = (trendRank[aTrend] ?? 1) - (trendRank[bTrend] ?? 1);
+        if (rankDiff !== 0) return rankDiff;
+        const aRate = a.trend_summary?.recent_success_rate ?? a.success_rate ?? 100;
+        const bRate = b.trend_summary?.recent_success_rate ?? b.success_rate ?? 100;
+        return aRate - bRate;
+    });
+}
+
+function sortReliabilityRecommendations(recs) {
+    const priorityRank = { critical: 0, high: 1, medium: 2, info: 3 };
+    return [...recs].sort(
+        (a, b) => (priorityRank[a.priority] ?? 4) - (priorityRank[b.priority] ?? 4),
+    );
+}
+
+function getReliabilityScriptRows() {
+    const scripts = state.reliabilitySummary?.scripts || {};
+    const trendScripts = state.reliabilityTrends?.scripts || {};
+
+    const rows = Object.keys(scripts).map((name) => {
+        const stats = scripts[name] || {};
+        const trendData = trendScripts[name] || {};
+        return {
+            name,
+            ...stats,
+            trendData,
+            flaky: trendData.flaky || stats.flaky || {},
+            duration_regression: trendData.duration_regression || stats.duration_regression || {},
+            trend_summary: trendData.trend || stats.trend_summary || {},
+        };
+    });
+    return sortReliabilityByLowestScore(rows);
+}
+
+function filterReliabilityScriptRows(rows) {
+    const query = (state.reliabilitySearch || '').trim().toLowerCase();
+    const filter = state.reliabilityFilter || 'all';
+
+    return rows.filter((row) => {
+        if (query && !String(row.name || '').toLowerCase().includes(query)) {
+            return false;
+        }
+        const trend = getReliabilityTrendDirection(row);
+        const flaky = row.flaky?.is_flaky || (row.flaky_executions ?? 0) >= 3;
+        const slow = (row.slow_executions ?? 0) > 0 || row.duration_regression?.regressed;
+        const score = row.reliability_score ?? 100;
+
+        if (filter === 'flaky' && !flaky) return false;
+        if (filter === 'slow' && !slow) return false;
+        if (filter === 'failing' && score >= 80) return false;
+        if (filter === 'improving' && trend !== 'improving') return false;
+        if (filter === 'degrading' && trend !== 'degrading') return false;
+        return true;
+    });
+}
+
+function renderReliabilityEmpty(message = 'No data available.', variant = 'empty') {
+    return `<div class="reliability-empty reliability-empty--${variant}" role="status">${escapeHtml(message)}</div>`;
+}
+
+function setReliabilityPanelContent(element, html, emptyMessage, variant = 'empty') {
+    if (!element) return;
+    element.innerHTML = (html && html.trim())
+        ? html
+        : renderReliabilityEmpty(emptyMessage, variant);
+}
+
+function reliabilityFailureBadgeClass(failureType) {
+    const safe = String(failureType || 'unknown_failure').replace(/[^a-z0-9_]/gi, '_');
+    return `failure-badge failure-badge--${safe}`;
+}
+
+function getOrchestrationSeverity() {
+    const diag = state.reliabilityDiagnostics;
+    const summary = state.reliabilitySummary;
+    const severity = diag?.severity
+        || summary?.severity
+        || summary?.diagnostics?.severity
+        || diag?.indicators?.orchestration_health
+        || 'ok';
+    if (severity === 'critical' || severity === 'warning' || severity === 'ok') {
+        return severity;
+    }
+    return 'ok';
+}
+
+function getOrchestrationWarnings() {
+    const warnings = [];
+    const diag = state.reliabilityDiagnostics;
+    if (!diag) return warnings;
+
+    const staleness = diag.staleness || state.reliabilitySummary?.staleness;
+    if (staleness?.is_stale) {
+        warnings.push('Orchestration diagnostics may be stale; use Refresh to recompute.');
+    }
+
+    (diag.warnings || []).forEach((message) => warnings.push(message));
+    (diag.corrupted_artifacts || []).forEach((artifact) => {
+        warnings.push(`Corrupted ${artifact.scope} artifact isolated: ${artifact.file}`);
+    });
+    const workspace = diag.workspace || {};
+    (workspace.warnings || []).forEach((message) => warnings.push(message));
+
+    return warnings;
+}
+
+function getReliabilityDataWarnings() {
+    const warnings = [];
+    const summary = state.reliabilitySummary;
+    const err = (state.reliabilityError || '').toLowerCase();
+
+    getOrchestrationWarnings().forEach((message) => {
+        if (!warnings.includes(message)) warnings.push(message);
+    });
+
+    if (summary?.corrupted) {
+        warnings.push('Reliability summary was recovered from backup after file corruption.');
+    }
+    if (summary?.version != null && summary.version !== RELIABILITY_SUMMARY_VERSION) {
+        warnings.push(
+            `Summary schema v${summary.version} differs from dashboard v${RELIABILITY_SUMMARY_VERSION}; display may be incomplete.`,
+        );
+    }
+    if (err.includes('invalid') || err.includes('corrupt') || err.includes('json')) {
+        warnings.push('Reliability storage may contain corrupted data. Try Refresh to rebuild from execution history.');
+    }
+    if (
+        !state.reliabilityLoading
+        && !state.reliabilityError
+        && summary
+        && !summary.updated_at
+        && !summary.generated_at
+    ) {
+        warnings.push('Summary timestamp is missing; freshness of metrics is unknown.');
+    }
+    return warnings;
+}
+
+function updateReliabilityStatusBanner() {
+    const banner = document.getElementById('reliability-status-banner');
+    const modal = document.getElementById('reliability-modal');
+    if (!banner) return;
+
+    modal?.setAttribute('aria-busy', state.reliabilityLoading ? 'true' : 'false');
+
+    if (state.reliabilityLoading) {
+        banner.hidden = false;
+        banner.className = 'reliability-status-banner loading';
+        banner.setAttribute('role', 'status');
+        banner.innerHTML = '<span class="reliability-status-icon" aria-hidden="true"></span><span>Loading reliability data...</span>';
+        return;
+    }
+
+    if (state.reliabilityError) {
+        banner.hidden = false;
+        banner.className = 'reliability-status-banner error';
+        banner.setAttribute('role', 'alert');
+        banner.innerHTML = `<span class="reliability-status-icon" aria-hidden="true"></span><span>${escapeHtml(state.reliabilityError)}</span>`;
+        return;
+    }
+
+    const severity = getOrchestrationSeverity();
+    const warnings = getReliabilityDataWarnings();
+    if (warnings.length || severity !== 'ok') {
+        banner.hidden = false;
+        const bannerClass = severity === 'critical'
+            ? 'reliability-status-banner critical'
+            : 'reliability-status-banner warning';
+        banner.className = bannerClass;
+        banner.setAttribute('role', severity === 'critical' ? 'alert' : 'status');
+        const severityNote = severity !== 'ok'
+            ? `<p><strong>Orchestration health:</strong> ${escapeHtml(severity)}</p>`
+            : '';
+        banner.innerHTML = `<span class="reliability-status-icon" aria-hidden="true"></span><div>${severityNote}${warnings.map((w) => `<p>${escapeHtml(w)}</p>`).join('')}</div>`;
+        return;
+    }
+
+    banner.hidden = true;
+    banner.innerHTML = '';
+}
+
+function renderReliabilityScorecardSkeletons() {
+    return Array.from({ length: 5 }, () => `
+        <div class="reliability-scorecard reliability-card is-loading" aria-hidden="true">
+            <div class="reliability-skeleton reliability-skeleton-label"></div>
+            <div class="reliability-skeleton reliability-skeleton-value"></div>
+        </div>
+    `).join('');
+}
+
+function renderReliabilityScorecards(global, globalScore, scriptCount) {
+    return `
+        <div class="reliability-scorecard reliability-card reliability-animate-in ${getReliabilityScoreClass(globalScore)}">
+            <h4>Global reliability</h4>
+            <div class="value" aria-label="Global reliability score">${globalScore}%</div>
+        </div>
+        <div class="reliability-scorecard reliability-card reliability-animate-in">
+            <h4>Total runs</h4>
+            <div class="value">${global.total_runs ?? 0}</div>
+        </div>
+        <div class="reliability-scorecard reliability-card reliability-animate-in score-bad">
+            <h4>Failures</h4>
+            <div class="value">${global.failures ?? 0}</div>
+        </div>
+        <div class="reliability-scorecard reliability-card reliability-animate-in">
+            <h4>Avg duration</h4>
+            <div class="value">${global.average_duration ?? 0}s</div>
+        </div>
+        <div class="reliability-scorecard reliability-card reliability-animate-in">
+            <h4>Scripts tracked</h4>
+            <div class="value">${scriptCount}</div>
+        </div>
+    `;
+}
+
+function renderReliabilityFailureCard(type, count, label) {
+    return `
+        <div class="reliability-item reliability-card reliability-failure-card" role="listitem">
+            <div class="reliability-item-head">
+                <strong>${escapeHtml(type)}</strong>
+                <span class="${reliabilityFailureBadgeClass(type)}" aria-label="${count} occurrences">${count}</span>
+            </div>
+            <span class="reliability-item-meta">${escapeHtml(label)}</span>
+        </div>
+    `;
+}
+
+function renderReliabilityTrendCard(row) {
+    const trend = getReliabilityTrendDirection(row);
+    const summary = row.trend_summary?.recent_success_rate != null
+        ? row.trend_summary
+        : (row.trendData?.trend || {});
+    return `
+        <div class="reliability-item reliability-card reliability-trend-card trend-${trend}" role="listitem">
+            <div class="reliability-item-head">
+                <strong>${escapeHtml(row.name)}</strong>
+                <span class="reliability-badge trend-${trend}">${trend}</span>
+            </div>
+            <span class="reliability-item-meta">
+                recent success ${summary.recent_success_rate ?? row.success_rate ?? 0}%
+                (${summary.recent_successes ?? 0}/${summary.recent_runs ?? 0} runs)
+            </span>
+        </div>
+    `;
+}
+
+function renderReliabilityRecommendation(rec) {
+    const priority = rec.priority || 'info';
+    return `
+        <div class="reliability-item reliability-card reliability-recommendation reliability-recommendation--${escapeAttr(priority)}" role="listitem">
+            <div class="reliability-item-head">
+                <span class="reliability-badge ${escapeAttr(priority)}">${escapeHtml(priority)}</span>
+                ${rec.script ? `<strong>${escapeHtml(rec.script)}</strong>` : ''}
+            </div>
+            <p class="reliability-item-meta">${escapeHtml(rec.message || '')}</p>
+        </div>
+    `;
+}
+
+function formatReliabilityUpdatedAt(isoValue) {
+    if (!isoValue) return 'Last updated: —';
+    try {
+        const date = new Date(isoValue);
+        if (Number.isNaN(date.getTime())) return `Last updated: ${isoValue}`;
+        return `Last updated: ${date.toLocaleString()}`;
+    } catch {
+        return `Last updated: ${isoValue}`;
+    }
+}
+
+function updateReliabilityHeaderTimestamp() {
+    const updatedEl = document.getElementById('reliability-updated-at');
+    if (!updatedEl) return;
+    if (state.reliabilityLoading) {
+        updatedEl.textContent = 'Last updated: loading...';
+        return;
+    }
+    const summaryAt = state.reliabilitySummary?.updated_at
+        || state.reliabilitySummary?.generated_at;
+    const diagAt = state.reliabilityDiagnostics?.diagnostics_updated_at
+        || state.reliabilitySummary?.diagnostics_updated_at;
+    const stale = state.reliabilityDiagnostics?.staleness?.is_stale
+        || state.reliabilitySummary?.staleness?.is_stale;
+    if (summaryAt && diagAt && summaryAt !== diagAt) {
+        updatedEl.textContent = `${formatReliabilityUpdatedAt(summaryAt)} · diagnostics ${formatReliabilityUpdatedAt(diagAt)}${stale ? ' (stale)' : ''}`;
+        return;
+    }
+    updatedEl.textContent = formatReliabilityUpdatedAt(summaryAt || diagAt);
+}
+
+function renderReliabilityOrchestrationPanel() {
+    const panel = document.getElementById('reliability-orchestration');
+    if (!panel) return;
+
+    const diag = state.reliabilityDiagnostics;
+    if (!diag) {
+        setReliabilityPanelContent(panel, '', 'No orchestration diagnostics loaded.');
+        return;
+    }
+
+    const indicators = diag.indicators || {};
+    const replay = diag.replay || {};
+    const workspace = diag.workspace || {};
+    const unstable = replay.unstable_sessions || [];
+    const corrupted = diag.corrupted_artifacts || [];
+    const severity = getOrchestrationSeverity();
+    const sources = diag.sources || {};
+    const staleness = diag.staleness || {};
+    const severityClass = severity === 'critical' ? 'error' : (severity === 'warning' ? 'warn' : 'ok');
+
+    const sourceHtml = Object.keys(sources).length
+        ? `<div class="diagnostic-source-row">${Object.entries(sources).map(([key, label]) => `
+            <span class="diagnostic-pill ok" title="Data source">${escapeHtml(key)}: ${escapeHtml(String(label))}</span>
+        `).join('')}</div>`
+        : '';
+
+    const indicatorHtml = `
+        <div class="reliability-item reliability-card diagnostic-indicators" role="listitem">
+            <div class="reliability-item-head">
+                <strong>System indicators</strong>
+                <span class="diagnostic-pill ${severityClass}">${escapeHtml(severity)}</span>
+            </div>
+            <div class="diagnostic-indicator-row">
+                <span class="diagnostic-pill ${indicators.workspace_ok ? 'ok' : 'warn'}">Workspace ${indicators.workspace_ok ? 'OK' : 'Issue'}</span>
+                <span class="diagnostic-pill ${indicators.replay_stable ? 'ok' : 'warn'}">Replay ${indicators.replay_stable ? 'stable' : 'unstable'}</span>
+                <span class="diagnostic-pill ${indicators.has_corruption ? 'error' : 'ok'}">Corruption ${indicators.has_corruption ? 'detected' : 'none'}</span>
+            </div>
+            ${sourceHtml}
+            ${staleness.is_stale ? '<span class="reliability-item-meta">Diagnostics cache is stale.</span>' : ''}
+            ${diag.diagnostics_updated_at ? `<span class="reliability-item-meta">Updated ${escapeHtml(formatReliabilityUpdatedAt(diag.diagnostics_updated_at))}</span>` : ''}
+        </div>
+    `;
+
+    const workspaceHtml = (workspace.warnings || []).length
+        ? workspace.warnings.map((w) => `
+            <div class="reliability-item reliability-card diagnostic-workspace" role="listitem">
+                <span class="reliability-badge medium">workspace</span>
+                <span class="reliability-item-meta">${escapeHtml(w)}</span>
+            </div>
+        `).join('')
+        : '';
+
+    const corruptedHtml = corrupted.map((artifact) => `
+        <div class="reliability-item reliability-card diagnostic-corrupted" role="listitem">
+            <span class="reliability-badge high">${escapeHtml(artifact.scope)}</span>
+            <span class="reliability-item-meta">${escapeHtml(artifact.file)}</span>
+        </div>
+    `).join('');
+
+    const unstableHtml = unstable.map((session) => {
+        const link = session.reliability_link || {};
+        const reasons = (session.reasons || []).join(', ');
+        return `
+        <div class="reliability-item reliability-card diagnostic-replay-unstable" role="listitem">
+            <div class="reliability-item-head">
+                <strong>${escapeHtml(session.display_name || session.id || 'session')}</strong>
+                <span class="reliability-badge indicator-flaky">unstable</span>
+            </div>
+            <span class="reliability-item-meta">
+                score ${link.reliability_score ?? '—'}% · instability ${session.instability_score ?? 0}
+                ${reasons ? ` · ${escapeHtml(reasons)}` : ''}
+            </span>
+        </div>
+    `;
+    }).join('');
+
+    const html = indicatorHtml + workspaceHtml + corruptedHtml + unstableHtml;
+    const emptyMsg = 'Replay and workspace orchestration look healthy.';
+    setReliabilityPanelContent(panel, html, emptyMsg);
+}
+
+function renderReliabilityPanelsLoading() {
+    const loadingMessage = 'Loading...';
+    const variant = 'loading';
+    setReliabilityPanelContent(document.getElementById('reliability-orchestration'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-failure-categories'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-flaky-scripts'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-slow-scripts'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-trend-summaries'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-recommendations'), '', loadingMessage, variant);
+    setReliabilityPanelContent(document.getElementById('reliability-script-list'), '', loadingMessage, variant);
+    updateReliabilityHeaderTimestamp();
+    updateReliabilityStatusBanner();
+}
+
+function renderReliabilityDashboard() {
+    const banner = document.getElementById('reliability-status-banner');
+    const scorecards = document.getElementById('reliability-scorecards');
+    const failureCategories = document.getElementById('reliability-failure-categories');
+    const flakyScripts = document.getElementById('reliability-flaky-scripts');
+    const slowScripts = document.getElementById('reliability-slow-scripts');
+    const trendSummaries = document.getElementById('reliability-trend-summaries');
+    const recommendationsEl = document.getElementById('reliability-recommendations');
+    const scriptList = document.getElementById('reliability-script-list');
+
+    if (!banner || !scorecards) return;
+
+    updateReliabilityHeaderTimestamp();
+    updateReliabilityStatusBanner();
+
+    if (state.reliabilityLoading) {
+        scorecards.innerHTML = renderReliabilityScorecardSkeletons();
+        renderReliabilityPanelsLoading();
+        return;
+    }
+
+    const global = state.reliabilitySummary?.global || {};
+    const globalScore = global.reliability_score ?? 0;
+    const scripts = state.reliabilitySummary?.scripts || {};
+    const scriptCount = Object.keys(scripts).length;
+
+    scorecards.innerHTML = renderReliabilityScorecards(global, globalScore, scriptCount);
+
+    const failureTypes = state.reliabilitySummary?.failure_types
+        || state.reliabilityFailures?.failure_types
+        || {};
+    const breakdown = state.reliabilityFailures?.failure_breakdown
+        || global.failure_breakdown
+        || {};
+
+    const totalFailures = global.failures ?? state.reliabilityFailures?.total_failures ?? 0;
+    const failureEntries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
+    const failureEmptyMessage = totalFailures === 0
+        ? 'No failures recorded.'
+        : 'No failure categories recorded.';
+    setReliabilityPanelContent(
+        failureCategories,
+        failureEntries.map(([type, count]) =>
+            renderReliabilityFailureCard(type, count, failureTypes[type] || type),
+        ).join(''),
+        failureEmptyMessage,
+    );
+
+    const allRows = getReliabilityScriptRows();
+    const flakyRows = sortReliabilityByFlaky(
+        allRows.filter((row) => row.flaky?.is_flaky || (row.flaky_executions ?? 0) >= 3),
+    );
+    const slowRows = sortReliabilityBySlowest(
+        allRows.filter((row) =>
+            (row.slow_executions ?? 0) > 0 || row.duration_regression?.regressed,
+        ),
+    );
+
+    setReliabilityPanelContent(
+        flakyScripts,
+        flakyRows.map((row) => `
+            <div class="reliability-item reliability-card" role="listitem">
+                <div class="reliability-item-head">
+                    <strong>${escapeHtml(row.name)}</strong>
+                    <span class="reliability-badge indicator-flaky">flaky</span>
+                </div>
+                <span class="reliability-item-meta">${row.flaky_executions ?? 0} alternations in recent window</span>
+            </div>
+        `).join(''),
+        'No flaky scripts detected.',
+    );
+
+    setReliabilityPanelContent(
+        slowScripts,
+        slowRows.map((row) => {
+            const reg = row.duration_regression || {};
+            return `
+            <div class="reliability-item reliability-card" role="listitem">
+                <div class="reliability-item-head">
+                    <strong>${escapeHtml(row.name)}</strong>
+                    <span class="reliability-badge indicator-slow">slow</span>
+                    ${reg.regressed ? '<span class="reliability-badge indicator-regressed">regressed</span>' : ''}
+                </div>
+                <span class="reliability-item-meta">
+                    avg ${row.average_duration ?? 0}s
+                    ${reg.regressed ? ` · +${reg.change_percent ?? 0}% vs baseline` : ''}
+                </span>
+            </div>
+        `;
+        }).join(''),
+        'No slow scripts detected.',
+    );
+
+    const trendRows = sortReliabilityTrendRows(
+        allRows.filter((row) => getReliabilityTrendDirection(row) !== 'stable'),
+    );
+    setReliabilityPanelContent(
+        trendSummaries,
+        trendRows.map((row) => renderReliabilityTrendCard(row)).join(''),
+        'No trend changes detected.',
+    );
+
+    const recs = sortReliabilityRecommendations(state.reliabilityRecommendations || []);
+    setReliabilityPanelContent(
+        recommendationsEl,
+        recs.map((rec) => renderReliabilityRecommendation(rec)).join(''),
+        'No recommendations at this time.',
+    );
+
+    const filtered = sortReliabilityByHighestFailureRate(filterReliabilityScriptRows(allRows));
+    const scriptEmptyMessage = scriptCount === 0
+        ? 'No scripts tracked yet.'
+        : 'No scripts match the current filter.';
+    setReliabilityPanelContent(
+        scriptList,
+        filtered.map((row) => {
+            const trend = getReliabilityTrendDirection(row);
+            const score = row.reliability_score ?? 0;
+            const failureRate = Math.round(getReliabilityFailureRate(row) * 10) / 10;
+            return `
+            <div class="reliability-item reliability-card reliability-script-row" role="listitem">
+                <span class="script-name">${escapeHtml(row.name)}</span>
+                <span class="reliability-badge ${getReliabilityScoreClass(score)}">${score}%</span>
+                <span class="reliability-badge trend-${trend}">${trend}</span>
+                <span class="reliability-script-stats">${failureRate}% fail · ${row.failures ?? 0}/${row.total_runs ?? 0} runs</span>
+            </div>
+        `;
+        }).join(''),
+        scriptEmptyMessage,
+    );
+
+    renderReliabilityOrchestrationPanel();
+    updateReliabilityStatusBanner();
+}
+
+async function openReliabilityDashboard() {
+    const overlay = document.getElementById('reliability-modal-overlay');
+    if (!overlay) return;
+    overlay.classList.add('active');
+    await loadReliabilityDashboard(false);
+}
+
+function closeReliabilityDashboard() {
+    document.getElementById('reliability-modal-overlay')?.classList.remove('active');
 }
 
 async function loadCommandHistory() {
@@ -279,6 +1011,27 @@ function updateRunButton() {
     }
 }
 
+function cleanupRunningScript(termId) {
+    const running = state.runningScripts[termId];
+    if (!running) return;
+
+    if (running.controller) {
+        if (!running.controller.signal.aborted) {
+            try {
+                running.controller.abort();
+            } catch (_) {}
+        }
+        running.controller = null;
+    }
+
+    delete state.runningScripts[termId];
+
+    if (termId === state.activeTerminalId) {
+        updateRunButton();
+        updateProgressTrackerUI();
+    }
+}
+
 async function abortScriptRun(termId = state.activeTerminalId) {
     const running = state.runningScripts[termId];
     if (!running) return;
@@ -287,28 +1040,36 @@ async function abortScriptRun(termId = state.activeTerminalId) {
     running.aborting = true;
     updateRunButton();
 
-    if (!running.run_id || running.killSent) return;
+    if (running.controller && !running.controller.signal.aborted) {
+        try {
+            running.controller.abort();
+        } catch (_) {}
+    }
 
+    if (!running.run_id) {
+        cleanupRunningScript(termId);
+        return;
+    }
+
+    if (running.killSent) return;
     running.killSent = true;
+
     try {
         const res = await fetch(API.kill, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ run_id: running.run_id }),
+            keepalive: true
         });
 
         if (!res.ok && res.status !== 404) {
             const data = await res.json().catch(() => ({}));
-            running.killSent = false;
-            running.aborting = false;
-            updateRunButton();
             notify(data.error || 'Failed to abort script.', 'error');
         }
     } catch (e) {
-        running.killSent = false;
-        running.aborting = false;
-        updateRunButton();
         notify(`Failed to abort script: ${e.message}`, 'error');
+    } finally {
+        cleanupRunningScript(termId);
     }
 }
 
@@ -319,6 +1080,7 @@ async function runScript(relPath) {
     const resourcePanel = document.getElementById('resource-panel');
 
     let runId = null;
+    const controller = new AbortController();
 
     state.runningScripts[termId] = {
         run_id: null,
@@ -326,6 +1088,11 @@ async function runScript(relPath) {
         abortRequested: false,
         aborting: false,
         killSent: false,
+        step: 0,
+        total: 0,
+        command: 'Starting script...',
+        status: 'running',
+        controller: controller
     };
     updateRunButton();
 
@@ -338,22 +1105,17 @@ async function runScript(relPath) {
     appendToCli(`$ Running script: ${relPath}`, 'system', termId);
     if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('info', `▶ Running script: ${relPath}`, 'script');
 
-    // Initialize progress tracker state for this terminal
-    state.runningScripts[termId] = {
-        step: 0,
-        total: 0,
-        command: 'Starting script...',
-        status: 'running'
-    };
     if (termId === state.activeTerminalId) {
         updateProgressTrackerUI();
     }
 
+    let reader = null;
     try {
         const res = await fetch(API.run, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: state.unlockedScripts[relPath] || '' }),
+            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath) }),
+            signal: controller.signal
         });
 
         if (res.status === 401) {
@@ -363,16 +1125,7 @@ async function runScript(relPath) {
                 runStatus.textContent = 'Locked';
                 runStatus.className = 'run-status error';
             }
-            if (state.runningScripts[termId]) {
-                state.runningScripts[termId].status = 'failed';
-                if (termId === state.activeTerminalId) updateProgressTrackerUI();
-                setTimeout(() => {
-                    if (state.runningScripts[termId] && state.runningScripts[termId].status === 'failed') {
-                        state.runningScripts[termId].status = 'idle';
-                        if (state.activeTerminalId === termId) updateProgressTrackerUI();
-                    }
-                }, 5000);
-            }
+            cleanupRunningScript(termId);
             return;
         }
 
@@ -385,139 +1138,172 @@ async function runScript(relPath) {
             throw new Error('Script run did not return a stream');
         }
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
+        let receivedTerminalEvent = false;
 
-        while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
+        try {
+            reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
 
-            buffer += decoder.decode(value, { stream: true });
+            try {
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
 
-            let eolIndex;
-            while ((eolIndex = buffer.indexOf('\n\n')) >= 0) {
-                const chunk = buffer.slice(0, eolIndex).trim();
-                buffer = buffer.slice(eolIndex + 2);
+                    buffer += decoder.decode(value, { stream: true });
 
-                if (chunk.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(chunk.substring(6));
+                    let eolIndex;
+                    while ((eolIndex = buffer.indexOf('\n\n')) >= 0) {
+                        const chunk = buffer.slice(0, eolIndex).trim();
+                        buffer = buffer.slice(eolIndex + 2);
 
-                        if (data.type === 'started') {
-                            runId = data.run_id;
-                            const running = state.runningScripts[termId];
-                            if (running) {
-                                running.run_id = runId;
-                                if (running.abortRequested) abortScriptRun(termId);
-                            }
-                            updateRunButton();
-                            appendToCli(data.content, 'system', termId);
-                        } else if (data.type === 'stdout' || data.type === 'error' || data.type === 'system') {
-                            let cssClass = data.type === 'stdout' ? 'stdout' : (data.type === 'system' ? 'system' : 'stderr');
-                            appendToCli(data.content, cssClass, termId);
-                            if (typeof DebuggerConsole !== 'undefined') {
-                                const dbgType = data.type === 'error' ? 'error' : 'log';
-                                DebuggerConsole.addEntry(dbgType, data.content.trimEnd(), relPath);
-                            }
-            } else if (data.type === 'progress') {
-                state.runningScripts[termId] = {
-                    step: data.step,
-                    total: data.total,
-                    command: data.command,
-                    status: 'running'
-                };
-                if (termId === state.activeTerminalId) {
-                    updateProgressTrackerUI();
-                }
-            } else if (data.type === 'aborted') {
-                appendToCli(data.content, 'error', termId);
-                if (typeof DebuggerConsole !== 'undefined') {
-                    DebuggerConsole.addEntry('error', `Script aborted (ID: ${data.run_id})`, 'script');
-                }
-                if (termId === state.activeTerminalId) {
-                    runStatus.textContent = 'Aborted';
-                    runStatus.className = 'run-status error';
-                            }
-                        } else if (data.type === 'metrics') {
-                            if (data.success) {
-                                appendToCli(`Script completed (Exit code: ${data.exit_code})`, 'success', termId);
-                                if (typeof DebuggerConsole !== 'undefined') {
-                                    DebuggerConsole.addEntry('info', `✓ Script completed — exit code: ${data.exit_code} | time: ${data.resources?.execution_time_formatted || ''} | cpu: ${data.resources?.cpu_percent || 0}% | mem: ${data.resources?.memory_used_mb || 0}MB`, 'metrics');
-                                }
-                                if (termId === state.activeTerminalId) {
-                                    runStatus.textContent = 'Success';
-                                    runStatus.className = 'run-status success';
-                                }
-                                if (state.runningScripts[termId]) {
-                                    state.runningScripts[termId].status = 'success';
-                                    if (state.runningScripts[termId].total > 0) {
-                                        state.runningScripts[termId].step = state.runningScripts[termId].total;
+                        if (chunk.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(chunk.substring(6));
+
+                                if (data.type === 'started') {
+                                    runId = data.run_id;
+                                    const running = state.runningScripts[termId];
+                                    if (running) {
+                                        running.run_id = runId;
+                                        if (running.abortRequested) abortScriptRun(termId);
                                     }
-                                    if (termId === state.activeTerminalId) updateProgressTrackerUI();
-                                    setTimeout(() => {
-                                        if (state.runningScripts[termId] && state.runningScripts[termId].status === 'success') {
-                                            state.runningScripts[termId].status = 'idle';
-                                            if (state.activeTerminalId === termId) updateProgressTrackerUI();
+                                    updateRunButton();
+                                    appendToCli(data.content, 'system', termId);
+                                } else if (data.type === 'stdout' || data.type === 'error' || data.type === 'system') {
+                                    let cssClass = data.type === 'stdout' ? 'stdout' : (data.type === 'system' ? 'system' : 'stderr');
+                                    appendToCli(data.content, cssClass, termId);
+                                    if (typeof DebuggerConsole !== 'undefined') {
+                                        const dbgType = data.type === 'error' ? 'error' : 'log';
+                                        DebuggerConsole.addEntry(dbgType, data.content.trimEnd(), relPath);
+                                    }
+                                } else if (data.type === 'progress') {
+                                    const runState = state.runningScripts[termId];
+                                    if (runState) {
+                                        runState.step = data.step;
+                                        runState.total = data.total;
+                                        runState.command = data.command;
+                                        runState.status = 'running';
+                                    }
+                                    if (termId === state.activeTerminalId) {
+                                        updateProgressTrackerUI();
+                                    }
+                                } else if (data.type === 'aborted') {
+                                    receivedTerminalEvent = true;
+                                    appendToCli(data.content, 'error', termId);
+                                    if (typeof DebuggerConsole !== 'undefined') {
+                                        DebuggerConsole.addEntry('error', `Script aborted (ID: ${data.run_id})`, 'script');
+                                    }
+                                    if (termId === state.activeTerminalId) {
+                                        runStatus.textContent = 'Aborted';
+                                        runStatus.className = 'run-status error';
+                                    }
+                                } else if (data.type === 'metrics') {
+                                    receivedTerminalEvent = true;
+                                    if (data.success) {
+                                        appendToCli(`Script completed (Exit code: ${data.exit_code})`, 'success', termId);
+                                        if (typeof DebuggerConsole !== 'undefined') {
+                                            DebuggerConsole.addEntry('info', `✓ Script completed — exit code: ${data.exit_code} | time: ${data.resources?.execution_time_formatted || ''} | cpu: ${data.resources?.cpu_percent || 0}% | mem: ${data.resources?.memory_used_mb || 0}MB`, 'metrics');
                                         }
-                                    }, 3000);
-                                }
-                            } else {
-                                appendToCli(`Script failed (Exit code: ${data.exit_code})`, 'error', termId);
-                                if (typeof DebuggerConsole !== 'undefined') {
-                                    DebuggerConsole.addEntry('error', `✗ Script failed — exit code: ${data.exit_code}`, 'metrics');
-                                }
-                                if (termId === state.activeTerminalId) {
-                                    runStatus.textContent = 'Failed';
-                                    runStatus.className = 'run-status error';
-                                }
-                                if (state.runningScripts[termId]) {
-                                    state.runningScripts[termId].status = 'failed';
-                                    if (termId === state.activeTerminalId) updateProgressTrackerUI();
-                                    setTimeout(() => {
-                                        if (state.runningScripts[termId] && state.runningScripts[termId].status === 'failed') {
-                                            state.runningScripts[termId].status = 'idle';
-                                            if (state.activeTerminalId === termId) updateProgressTrackerUI();
+                                        if (termId === state.activeTerminalId) {
+                                            runStatus.textContent = 'Success';
+                                            runStatus.className = 'run-status success';
                                         }
-                                    }, 5000);
-                                }
-                            }
+                                        if (state.runningScripts[termId]) {
+                                            state.runningScripts[termId].status = 'success';
+                                            if (state.runningScripts[termId].total > 0) {
+                                                state.runningScripts[termId].step = state.runningScripts[termId].total;
+                                            }
+                                            if (termId === state.activeTerminalId) updateProgressTrackerUI();
+                                            setTimeout(() => {
+                                                if (state.runningScripts[termId] && state.runningScripts[termId].status === 'success') {
+                                                    state.runningScripts[termId].status = 'idle';
+                                                    if (state.activeTerminalId === termId) updateProgressTrackerUI();
+                                                }
+                                            }, 3000);
+                                        }
+                                    } else {
+                                        appendToCli(`Script failed (Exit code: ${data.exit_code})`, 'error', termId);
+                                        if (typeof DebuggerConsole !== 'undefined') {
+                                            DebuggerConsole.addEntry('error', `✗ Script failed — exit code: ${data.exit_code}`, 'metrics');
+                                        }
+                                        if (termId === state.activeTerminalId) {
+                                            runStatus.textContent = 'Failed';
+                                            runStatus.className = 'run-status error';
+                                        }
+                                        if (state.runningScripts[termId]) {
+                                            state.runningScripts[termId].status = 'failed';
+                                            if (termId === state.activeTerminalId) updateProgressTrackerUI();
+                                            setTimeout(() => {
+                                                if (state.runningScripts[termId] && state.runningScripts[termId].status === 'failed') {
+                                                    state.runningScripts[termId].status = 'idle';
+                                                    if (state.activeTerminalId === termId) updateProgressTrackerUI();
+                                                }
+                                            }, 5000);
+                                        }
+                                    }
 
-                            if (data.resources && Object.keys(data.resources).length > 0) {
-                                if (termId === state.activeTerminalId) {
-                                    renderResources(data.resources);
-                                    resourcePanel.style.display = '';
+                                    if (data.resources && Object.keys(data.resources).length > 0) {
+                                        if (termId === state.activeTerminalId) {
+                                            renderResources(data.resources);
+                                            resourcePanel.style.display = '';
+                                        }
+                                    }
                                 }
-                            }
+                            } catch (e) { }
                         }
-                    } catch (e) { }
+                    }
                 }
+            } finally {
+                try {
+                    reader.releaseLock();
+                } catch (_) {}
+            }
+
+            const running = state.runningScripts[termId];
+            if (!receivedTerminalEvent && running && !running.abortRequested) {
+                appendToCli('Connection to script stream lost unexpectedly.', 'error', termId);
+                if (termId === state.activeTerminalId) {
+                    runStatus.textContent = 'Disconnected';
+                    runStatus.className = 'run-status error';
+                }
+            }
+        } finally {
+            if (reader) {
+                try {
+                    reader.releaseLock();
+                } catch (_) {}
             }
         }
     } catch (err) {
-        const abortRequested = Boolean(state.runningScripts[termId]?.abortRequested);
-        if (!abortRequested) {
+        if (err.name === 'AbortError') {
+            appendToCli('Script run aborted.', 'system', termId);
+            if (termId === state.activeTerminalId) {
+                runStatus.textContent = 'Aborted';
+                runStatus.className = 'run-status error';
+            }
+        } else {
             appendToCli(`Error executing script: ${err.message}`, 'stderr', termId);
             if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('error', `Script error: ${err.message}`, 'script');
             if (termId === state.activeTerminalId) {
                 runStatus.textContent = 'Error';
                 runStatus.className = 'run-status error';
             }
-        }
-        if (state.runningScripts[termId]) {
-            state.runningScripts[termId].status = 'failed';
-            if (termId === state.activeTerminalId) updateProgressTrackerUI();
-            setTimeout(() => {
-                if (state.runningScripts[termId] && state.runningScripts[termId].status === 'failed') {
-                    state.runningScripts[termId].status = 'idle';
-                    if (state.activeTerminalId === termId) updateProgressTrackerUI();
-                }
-            }, 5000);
+            if (state.runningScripts[termId]) {
+                state.runningScripts[termId].status = 'failed';
+                if (termId === state.activeTerminalId) updateProgressTrackerUI();
+                setTimeout(() => {
+                    if (state.runningScripts[termId] && state.runningScripts[termId].status === 'failed') {
+                        state.runningScripts[termId].status = 'idle';
+                        if (state.activeTerminalId === termId) updateProgressTrackerUI();
+                    }
+                }, 5000);
+            }
         }
     } finally {
         refreshExecutionHistoryIfVisible();
-        delete state.runningScripts[termId];
-        updateRunButton();
+        cleanupRunningScript(termId);
+        reader = null;
     }
 }
 
@@ -629,12 +1415,17 @@ function renderHistoryEntries(entries = []) {
         const kindLabel = entry.kind === 'script' ? 'Script' : 'Command';
         const duration = formatHistoryDuration(entry);
         const excerpt = entry.output_excerpt ? escapeHtml(entry.output_excerpt).replace(/\n/g, '<br>') : '<span class="history-excerpt-empty">No output captured.</span>';
+        const unstableDiag = state.reliabilityDiagnostics?.replay?.unstable_by_id?.[entry.id];
+        const replayBadge = unstableDiag?.is_unstable
+            ? '<span class="history-diagnostic-badge unstable" title="Replay session unstable">unstable replay</span>'
+            : '';
         return `
             <article class="history-entry ${statusClass}">
                 <div class="history-entry-head">
                     <div class="history-entry-title-row">
                         <span class="history-entry-status ${statusClass}">${entry.status}</span>
                         <span class="history-entry-kind">${kindLabel}</span>
+                        ${replayBadge}
                         <span class="history-entry-time">${escapeHtml(entry.started_at || '')}</span>
                     </div>
                     <div class="history-entry-meta">
@@ -688,11 +1479,18 @@ async function refreshExecutionHistory() {
     renderHistoryEntries(state.historyEntries);
 }
 
-function openHistoryViewer() {
+async function openHistoryViewer() {
     const overlay = document.getElementById('history-modal-overlay');
     if (!overlay) return;
     overlay.classList.add('active');
-    refreshExecutionHistory();
+    if (!state.reliabilityDiagnostics) {
+        try {
+            state.reliabilityDiagnostics = await fetchReliabilityApi(API.reliability_diagnostics);
+        } catch (err) {
+            console.warn('Could not load replay diagnostics for history:', err);
+        }
+    }
+    await refreshExecutionHistory();
 }
 
 function closeHistoryViewer() {
@@ -741,7 +1539,7 @@ async function saveScript(category, filename, content) {
                 category,
                 filename,
                 content,
-                password: state.unlockedScripts[relPath] || ''
+                password: getUnlockPassword(relPath)
             }),
         });
         const data = await res.json();
@@ -777,7 +1575,7 @@ async function deleteScript(relPath) {
         const res = await fetch(API.delete, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: state.unlockedScripts[relPath] || '' })
+            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath) })
         });
         const data = await res.json();
         if (res.status === 401) {
@@ -1051,9 +1849,9 @@ async function manageLock(relPath, oldPass, newPass) {
         }
 
         if (data.locked) {
-            state.unlockedScripts[relPath] = newPass; // update session cache
+            markScriptUnlocked(relPath, newPass);
         } else {
-            delete state.unlockedScripts[relPath]; // unlocked completely
+            clearScriptUnlock(relPath);
         }
 
         await loadScripts();
@@ -1079,19 +1877,43 @@ async function openReplay(sessionId) {
         state.replay.events = data.events || [];
         state.replay.index = 0;
         state.replay.playing = true;
+        state.replay.sessionId = sessionId;
 
         const overlay = document.getElementById('replay-modal-overlay');
         const terminal = document.getElementById('replay-terminal');
         const metadata = document.getElementById('replay-metadata');
+        const replayDiagnostics = document.getElementById('replay-diagnostics');
 
         terminal.innerHTML = '';
 
+        const link = data.diagnostics?.reliability_link || {};
         metadata.innerHTML = `
             <strong>${escapeHtml(data.metadata.display_name)}</strong>
             · ${escapeHtml(data.metadata.status)}
             · Exit ${data.metadata.exit_code}
             · ${data.metadata.duration_seconds}s
+            ${link.reliability_score != null ? ` · reliability ${link.reliability_score}%` : ''}
         `;
+
+        if (replayDiagnostics) {
+            const diag = data.diagnostics || {};
+            const instability = diag.instability || {};
+            const warnings = diag.warnings || [];
+            if (instability.is_unstable || warnings.length) {
+                replayDiagnostics.hidden = false;
+                replayDiagnostics.className = 'replay-diagnostics warning';
+                replayDiagnostics.innerHTML = [
+                    instability.is_unstable ? '<strong>Replay instability detected.</strong>' : '',
+                    warnings.map((w) => escapeHtml(w)).join('<br>'),
+                    instability.reasons?.length
+                        ? `<span class="replay-diagnostics-reasons">${escapeHtml(instability.reasons.join(', '))}</span>`
+                        : '',
+                ].filter(Boolean).join('<br>');
+            } else {
+                replayDiagnostics.hidden = true;
+                replayDiagnostics.innerHTML = '';
+            }
+        }
 
         overlay.classList.add('active');
 
@@ -1177,6 +1999,7 @@ function restartReplay() {
 
 function closeReplay() {
     clearTimeout(state.replay.timer);
+    state.replay.sessionId = null;
 
     document
         .getElementById('replay-modal-overlay')
@@ -1302,7 +2125,7 @@ async function saveSession() {
         cmdHistory: state.cmdHistory,
         cmdHistoryIndex: state.cmdHistoryIndex,
 
-        unlockedScripts: state.unlockedScripts
+        unlockedScripts: serializeUnlockedScripts()
     };
 
     try {
@@ -1338,7 +2161,7 @@ function generateUUID() {
 }
 
 
-let saveSessionTimeout = null;
+// let saveSessionTimeout = null;
 
 function saveSessionDebounced() {
     if (saveSessionTimeout) {
@@ -1379,8 +2202,7 @@ async function restoreSession() {
         state.cmdHistoryIndex =
             session.cmdHistoryIndex || -1;
 
-        state.unlockedScripts =
-            session.unlockedScripts || {};
+        restoreUnlockedScripts(session.unlockedScripts);
 
         const existingTabs =
             document.querySelectorAll('.cli-tab');
@@ -1563,7 +2385,13 @@ function updateAutoScrollBtn(termId, isOn) {
     btn.classList.toggle('active', isOn);
     btn.title = isOn ? 'Auto-scroll: On' : 'Auto-scroll: Off';
     btn.setAttribute('aria-pressed', String(isOn));
-    termBody.scrollTop = termBody.scrollHeight;
+    const termBody =
+        document.getElementById(`terminal-body-${termId}`) ||
+        document.getElementById('terminal-body');
+
+    if (termBody) {
+        termBody.scrollTop = termBody.scrollHeight;
+    }    
     highlightTerminalSearch();
     persistWorkspace();
 }
@@ -1582,7 +2410,6 @@ function clearCli() {
         updateProgressTrackerUI();
     }
 }
-
 
 // ─── Session Persistence ──────────────────────────────────
 
@@ -1624,7 +2451,7 @@ async function saveSession() {
         cmdHistory: state.cmdHistory,
         cmdHistoryIndex: state.cmdHistoryIndex,
 
-        unlockedScripts: state.unlockedScripts
+        unlockedScripts: serializeUnlockedScripts()
     };
 
     try {
@@ -1701,8 +2528,7 @@ async function restoreSession() {
         state.cmdHistoryIndex =
             session.cmdHistoryIndex || -1;
 
-        state.unlockedScripts =
-            session.unlockedScripts || {};
+        restoreUnlockedScripts(session.unlockedScripts);
 
         const existingTabs =
             document.querySelectorAll('.cli-tab');
@@ -1787,7 +2613,6 @@ async function restoreSession() {
     }
 }
 
-
 // ─── Terminal Tabs ───
 
 function addTerminal() {
@@ -1860,6 +2685,10 @@ function switchTerminal(id) {
 function closeTerminal(id) {
     if (state.terminals.length <= 1) return;
 
+    if (state.runningScripts && state.runningScripts[id]) {
+        abortScriptRun(id);
+    }
+
     state.terminals = state.terminals.filter(t => t !== id);
     delete state.autoScroll[id];
 
@@ -1868,10 +2697,6 @@ function closeTerminal(id) {
 
     const bodyContainer = getTerminalBody(id);
     if (bodyContainer) bodyContainer.remove();
-
-    if (state.runningScripts && state.runningScripts[id]) {
-        delete state.runningScripts[id];
-    }
 
     if (state.activeTerminalId === id) {
         switchTerminal(state.terminals[state.terminals.length - 1]);
@@ -2076,7 +2901,7 @@ async function selectScript(relPath) {
     welcomePanel.style.display = 'none';
 
     // Handle locked state
-    if (script.locked && !state.unlockedScripts[relPath]) {
+    if (script.locked && (!isScriptUnlocked(relPath) || !unlockCredentials.has(relPath))) {
         detailPanel.style.display = 'none';
         lockedPanel.style.display = '';
 
@@ -2094,7 +2919,8 @@ async function selectScript(relPath) {
             if (content.locked) {
                 notify('Incorrect password.', 'error');
             } else {
-                state.unlockedScripts[relPath] = passInput.value;
+                markScriptUnlocked(relPath, passInput.value);
+                passInput.value = '';
                 selectScript(relPath);
             }
         };
@@ -2142,7 +2968,7 @@ async function selectScript(relPath) {
     }
 
     // Source code
-    const content = await fetchScriptContent(relPath, state.unlockedScripts[relPath] || '');
+    const content = await fetchScriptContent(relPath, getUnlockPassword(relPath));
     if (!content.locked && content !== undefined) {
         document.getElementById('detail-code').textContent = content;
     }
@@ -2221,7 +3047,7 @@ function openModal(mode = 'new') {
         const parts = state.activeScript.split('/');
         document.getElementById('modal-category').value = parts[0] || '';
         document.getElementById('modal-filename').value = parts[1] || '';
-        fetchScriptContent(state.activeScript, state.unlockedScripts[state.activeScript] || '').then(content => {
+        fetchScriptContent(state.activeScript, getUnlockPassword(state.activeScript)).then(content => {
             if (!content.locked) document.getElementById('modal-editor').value = content;
         });
     } else {
@@ -2239,13 +3065,157 @@ function closeModal() {
 }
 
 // ─── Event Bindings ────────────────────────────────────────
-
 function bindEvents() {
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
         cliSearchInput.addEventListener('input', () => highlightTerminalSearch());
     }
+    function scoreMatch(query, candidate) {
+        const normalizedQuery = String(query || '').toLowerCase();
+        const normalizedCandidate = String(candidate || '').toLowerCase();
+
+        if (!normalizedQuery) return 0;
+        if (normalizedCandidate.startsWith(normalizedQuery)) return 2;
+        if (normalizedCandidate.includes(normalizedQuery)) return 1;
+        return 0;
+    }
+
+    function fuzzyMatch(query, str) {
+        const normalizedQuery = String(query || '').toLowerCase();
+        const normalizedStr = String(str || '').toLowerCase();
+
+        if (!normalizedQuery) return true;
+
+        let queryIndex = 0;
+        for (let strIndex = 0; strIndex < normalizedStr.length && queryIndex < normalizedQuery.length; strIndex++) {
+            if (normalizedStr[strIndex] === normalizedQuery[queryIndex]) {
+                queryIndex++;
+            }
+        }
+
+        return queryIndex === normalizedQuery.length;
+    }
+
+    // Real-Time Sidebar Script Filter Logic (Fixed Variant)
+    const scriptSearchBar = document.getElementById('script-search-bar');
+    if (scriptSearchBar) {
+        scriptSearchBar.addEventListener('input', (e) => {
+            const filterText = e.target.value.toLowerCase().trim();
+            const categoryLists = document.querySelectorAll('#category-tree .script-list');
+            const categoryContainers = Array.from(document.querySelectorAll('#category-tree > .category-header'));
+
+            if (filterText === '') {
+                const scriptItems = document.querySelectorAll('#category-tree .script-item');
+                scriptItems.forEach(item => {
+                    item.style.display = 'flex';
+                    item.removeAttribute('data-score');
+                });
+
+                categoryLists.forEach(list => {
+                    list.style.maxHeight = '';
+                });
+
+                categoryContainers.forEach(container => {
+                    container.style.display = '';
+                });
+
+                return;
+            }
+
+            const scriptItems = Array.from(document.querySelectorAll('#category-tree .script-item'));
+            const visibleByParent = new Map();
+            const bestScoreByParent = new Map();
+
+            scriptItems.forEach(item => {
+                const scriptNameEl = item.querySelector('.script-item-name');
+                if (!scriptNameEl) return;
+
+                const scriptName = scriptNameEl.textContent.toLowerCase();
+
+                if (!fuzzyMatch(filterText, scriptName)) {
+                    item.style.display = 'none';
+                    item.removeAttribute('data-score');
+                    return;
+                }
+
+                const score = scoreMatch(filterText, scriptName);
+                item.dataset.score = String(score);
+                item.style.display = 'flex';
+
+                const parent = item.parentElement;
+                if (!visibleByParent.has(parent)) {
+                    visibleByParent.set(parent, []);
+                }
+                visibleByParent.get(parent).push(item);
+                bestScoreByParent.set(parent, Math.max(bestScoreByParent.get(parent) ?? -1, score));
+            });
+
+            visibleByParent.forEach((items, parent) => {
+                items.sort((a, b) => Number(b.dataset.score || 0) - Number(a.dataset.score || 0));
+                items.forEach(item => parent.appendChild(item));
+            });
+
+            categoryContainers.forEach(container => {
+                const list = container.querySelector('.script-list');
+                const hasVisibleItems = list && visibleByParent.has(list);
+                container.style.display = hasVisibleItems ? '' : 'none';
+            });
+
+            const rankedCategories = categoryContainers
+                .map(container => {
+                    const list = container.querySelector('.script-list');
+                    return {
+                        container,
+                        score: list ? (bestScoreByParent.get(list) ?? -1) : -1
+                    };
+                })
+                .filter(entry => entry.score >= 0)
+                .sort((a, b) => b.score - a.score);
+
+            const tree = document.getElementById('category-tree');
+            rankedCategories.forEach(({ container }) => tree.appendChild(container));
+
+            // Handle category auto-expansion smoothly without resetting terminal CSS
+            categoryLists.forEach(list => {
+                list.style.maxHeight = 'none';
+                list.classList.remove('collapsed');
+            });
+        });
+    }
+
+    // ─── THEME TOGGLE ENGINE LAYER ───
+    const themeToggleBtn = document.getElementById('theme-toggle-btn');
+    const moonIcon = document.getElementById('theme-icon-moon');
+    const sunIcon = document.getElementById('theme-icon-sun');
+    
+    if (themeToggleBtn) {
+        // Read local cache profile preference on load
+        const savedTheme = localStorage.getItem('theme') || 'dark';
+        
+        if (savedTheme === 'light') {
+            document.body.classList.add('light-theme');
+            if (moonIcon) moonIcon.style.display = 'none';
+            if (sunIcon) sunIcon.style.display = 'block';
+        }
+
+        themeToggleBtn.addEventListener('click', () => {
+            const isCurrentlyLight = document.body.classList.contains('light-theme');
+            
+            if (isCurrentlyLight) {
+                document.body.classList.remove('light-theme');
+                localStorage.setItem('theme', 'dark');
+                if (moonIcon) moonIcon.style.display = 'block';
+                if (sunIcon) sunIcon.style.display = 'none';
+            } else {
+                document.body.classList.add('light-theme');
+                localStorage.setItem('theme', 'light');
+                if (moonIcon) moonIcon.style.display = 'none';
+                if (sunIcon) sunIcon.style.display = 'block';
+            }
+        });
+    }
+
     // Real-Time Sidebar Script Filter Logic (Fixed Variant)
     const scriptSearchBar = document.getElementById('script-search-bar');
     if (scriptSearchBar) {
@@ -2400,6 +3370,10 @@ function bindEvents() {
 
     const btnFav = document.getElementById('btn-fav');
     if (btnFav) btnFav.addEventListener('click', () => { if (state.activeScript) toggleFavorite(state.activeScript); });
+
+    const btnPR = document.getElementById('btn-pr');
+    if (btnPR) btnPR.addEventListener('click', () => { if (state.activeScript) raisePRFlow(state.activeScript); });
+    
 
     // Clear terminal
     document.getElementById('btn-clear').addEventListener('click', clearCli);
@@ -2636,16 +3610,51 @@ function bindEvents() {
                     'success'
                 );
                 if (!isLocked && newPass) {
-                    delete state.unlockedScripts[state.activeScript];
+                    clearScriptUnlock(state.activeScript);
                     selectScript(state.activeScript);
                 } else if (isLocked && !newPass) {
-                    delete state.unlockedScripts[state.activeScript];
+                    clearScriptUnlock(state.activeScript);
                     selectScript(state.activeScript);
                 }
                 closeLock();
             }
         });
     }
+
+    document.getElementById('btn-reliability')?.addEventListener('click', openReliabilityDashboard);
+
+    document.getElementById('reliability-modal-close')?.addEventListener('click', closeReliabilityDashboard);
+    document.getElementById('reliability-refresh-btn')?.addEventListener('click', () => {
+        loadReliabilityDashboard(true);
+    });
+
+    const reliabilityOverlay = document.getElementById('reliability-modal-overlay');
+    if (reliabilityOverlay) {
+        reliabilityOverlay.addEventListener('click', (e) => {
+            if (e.target.id === 'reliability-modal-overlay') closeReliabilityDashboard();
+        });
+    }
+
+    const reliabilitySearch = document.getElementById('reliability-search');
+    if (reliabilitySearch) {
+        reliabilitySearch.addEventListener('input', () => {
+            state.reliabilitySearch = reliabilitySearch.value.trim();
+            renderReliabilityDashboard();
+        });
+    }
+
+    document.querySelectorAll('.reliability-filter').forEach((button) => {
+        button.addEventListener('click', () => {
+            document.querySelectorAll('.reliability-filter').forEach((el) => {
+                el.classList.remove('active');
+                el.setAttribute('aria-selected', 'false');
+            });
+            button.classList.add('active');
+            button.setAttribute('aria-selected', 'true');
+            state.reliabilityFilter = button.dataset.reliabilityFilter || 'all';
+            renderReliabilityDashboard();
+        });
+    });
 
     document
         .getElementById('btn-analytics')
@@ -2791,7 +3800,8 @@ function serializeWorkspace() {
                 ? DebuggerConsole.visible
                 : false,
         replayState: {
-            active: !!state.replay?.sessionId
+            active: !!state.replay?.sessionId,
+            sessionId: state.replay?.sessionId || null,
         }
     };
 }
@@ -2816,13 +3826,19 @@ async function checkWorkspaceRecovery() {
     try {
         const res = await fetch('/api/workspace');
         const data = await res.json();
+        const workspaceDiag = data.diagnostics || {};
 
         if (data.workspace && data.workspace.corrupted) {
             notify(
-                'Previous workspace snapshot was corrupted and has been isolated.',
+                workspaceDiag.warnings?.[0]
+                    || 'Previous workspace snapshot was corrupted and has been isolated.',
                 'warning'
             );
             return;
+        }
+
+        if (workspaceDiag.warnings?.length && !(data.workspace && data.workspace.corrupted)) {
+            notify(workspaceDiag.warnings[0], 'warning');
         }
 
         if (!data.workspace || !data.workspace.workspace) {
@@ -3144,6 +4160,13 @@ const DebuggerConsole = (() => {
     let debugHistory = [];
     let debugHistoryIdx = -1;
     let isOpen = false;
+    let hasShownWarning = false;
+
+    const BLOCKED_PATTERNS = [
+        'fetch(', 'XMLHttpRequest', 'document.cookie', 'localStorage',
+        'sessionStorage', 'indexedDB', 'Worker(', 'new Function(',
+        'new WebSocket(', 'import(', 'require(',
+    ];
 
     const ICONS_DBG = {
         log: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`,
@@ -3263,6 +4286,10 @@ const DebuggerConsole = (() => {
         if (isOpen) {
             const h = panel.offsetHeight;
             document.documentElement.style.setProperty('--debugger-height', h + 'px');
+            if (!hasShownWarning) {
+                hasShownWarning = true;
+                addEntry('warn', '⚠ Debugger Console has full access to the app state (state, DOM, fetch, etc.). Avoid pasting untrusted code.', 'security');
+            }
         }
         persistWorkspace();
     }
@@ -3394,9 +4421,14 @@ const DebuggerConsole = (() => {
 
         if (expr.trim() === 'clear') { clearConsole(); return; }
 
-        // JS expression evaluator only
+        if (BLOCKED_PATTERNS.some(p => expr.includes(p))) {
+            addEntry('warn', '⚠ Expression blocked — contains restricted API call.', 'security');
+            return;
+        }
+
         try {
-            const result = eval(expr); // eslint-disable-line no-eval
+            const sandboxed = new Function('state', `"use strict"; return (${expr})`);
+            const result = sandboxed(state);
             const output = (result === null) ? 'null' :
                 (result === undefined) ? 'undefined' :
                     typeof result === 'object' ? JSON.stringify(result, null, 2) : String(result);
@@ -3560,3 +4592,43 @@ document.addEventListener('keydown', (e) => {
 
 // Initialize debugger when DOM is ready
 document.addEventListener('DOMContentLoaded', () => { DebuggerConsole.init(); });
+
+// Global page lifecycle listeners for SSE resource cleanup
+if (!window.hasRegisteredLifecycleCleanup) {
+    window.hasRegisteredLifecycleCleanup = true;
+
+    const handleLifecycleCleanup = () => {
+        if (state.runningScripts) {
+            Object.keys(state.runningScripts).forEach(termId => {
+                const running = state.runningScripts[termId];
+                if (running) {
+                    if (running.controller) {
+                        if (!running.controller.signal.aborted) {
+                            try {
+                                running.controller.abort();
+                            } catch (_) {}
+                        }
+                    }
+                    if (running.run_id && !running.killSent) {
+                        running.killSent = true;
+                        fetch(API.kill, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ run_id: running.run_id }),
+                            keepalive: true
+                        }).catch(() => {});
+                    }
+                }
+            });
+            state.runningScripts = {};
+        }
+    };
+
+    window.addEventListener('beforeunload', handleLifecycleCleanup);
+    window.addEventListener('pagehide', handleLifecycleCleanup);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            handleLifecycleCleanup();
+        }
+    });
+}
