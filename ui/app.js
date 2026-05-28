@@ -57,6 +57,7 @@ let state = {
     sessionId: null,
     lastSaveTimestamp: 0,
     runningScripts: {},   // { termId: { run_id } }
+terminalFontSize: parseInt(localStorage.getItem('terminal-font-size')) || 13,
 };
 
 const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
@@ -1774,6 +1775,43 @@ function closeModal() {
 // ─── Event Bindings ────────────────────────────────────────
 
 function bindEvents() {
+    // ─── TERMINAL TEXT SIZE ZOOM PANEL ENGINE (#113) ───
+    const btnZoomIn = document.getElementById('btn-zoom-in');
+    const btnZoomOut = document.getElementById('btn-zoom-out');
+    const zoomDisplay = document.getElementById('terminal-zoom-display');
+    const terminalBody = document.getElementById('terminal-body');
+
+    // Sync rendering on startup routine
+    const applyTerminalFontSize = () => {
+        if (terminalBody) {
+            terminalBody.style.fontSize = `${state.terminalFontSize}px`;
+        }
+        if (zoomDisplay) {
+            zoomDisplay.textContent = `${state.terminalFontSize}px`;
+        }
+        localStorage.setItem('terminal-font-size', state.terminalFontSize);
+    };
+
+    // Initialize preference configurations instantly on event hook cycle
+    applyTerminalFontSize();
+
+    if (btnZoomIn) {
+        btnZoomIn.addEventListener('click', () => {
+            if (state.terminalFontSize < 20) { // Strict upper bounds constraint
+                state.terminalFontSize++;
+                applyTerminalFontSize();
+            }
+        });
+    }
+
+    if (btnZoomOut) {
+        btnZoomOut.addEventListener('click', () => {
+            if (state.terminalFontSize > 11) { // Strict lower bounds constraint
+                state.terminalFontSize--;
+                applyTerminalFontSize();
+            }
+        });
+    }
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
