@@ -1,0 +1,70 @@
+name: Bug report
+description: Use this form to report a bug with steps, expected outcome, and logs.
+title: "[BUG] <description>"
+labels:
+  - bug
+
+body:
+  - type: input
+    id: short_description
+    attributes:
+      label: Short description
+      description: Brief summary of the issue
+      placeholder: Brief summary of the issue
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the issue
+      description: Provide a clear and concise description of the problem.
+      placeholder: Describe the bug here
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current behavior
+      description: Describe what is happening now.
+      placeholder: What happens currently?
+
+  - type: textarea
+    id: expected_outcome
+    attributes:
+      label: Expected outcome
+      description: Describe what you expected to happen.
+      placeholder: What should happen instead?
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: List the steps needed to reproduce the bug.
+      placeholder: 1) ...\n2) ...\n3) ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots / Logs
+      description: Paste relevant log output or include links to screenshots. Remove sensitive data.
+      placeholder: Paste logs or image URLs here
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm the following before submitting.
+      options:
+        - label: I have read the contributing guidelines
+          value: read_contributing
+        - label: I have checked for duplicate issues
+          value: checked_duplicates
+        - label: I would like to work on a pull request to fix this
+          value: will_work_on_pr
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Any other context that may help.
+      placeholder: Add any extra details here

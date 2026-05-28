@@ -1,0 +1,69 @@
+name: Testing
+description: Report a failing test, request test coverage improvements, or share test results.
+title: "[TESTING] {{short_description}}"
+labels:
+  - testing
+
+body:
+  - type: input
+    id: short_description
+    attributes:
+      label: Short description
+      description: Brief summary (one line)
+      placeholder: Brief summary (one line)
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the issue
+      description: Explain the failing test, coverage gap, or test-related problem.
+      placeholder: Describe the issue here
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Provide the exact steps to reproduce the failing test or coverage issue.
+      placeholder: 1) ...\n2) ...\n3) ...
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Screenshots / Logs
+      description: Attach or paste any relevant screenshots, traceback output, or test logs.
+      placeholder: Logs or image links
+
+  - type: textarea
+    id: device_info
+    attributes:
+      label: Device info
+      description: Share the environment details in case the failure is caused by local setup or dependency issues.
+      placeholder: |
+        OS:
+        Python version:
+        Node version:
+        Browser:
+        Package versions:
+        Other relevant details:
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm the following before submitting.
+      options:
+        - label: I have read the contributing guidelines
+          value: read_contributing
+        - label: I have checked for duplicate issues
+          value: checked_duplicates
+        - label: I would like to work on a pull request to fix this
+          value: will_work_on_pr
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Any other context that may help.
+      placeholder: Add any extra details here
