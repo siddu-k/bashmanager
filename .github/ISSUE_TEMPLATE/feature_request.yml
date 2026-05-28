@@ -1,0 +1,71 @@
+name: Feature request
+description: Suggest an improvement or new feature and describe how it should work.
+title: "[FEATURE] <description>"
+labels:
+  - enhancement
+
+body:
+  - type: input
+    id: short_description
+    attributes:
+      label: Short description
+      description: Brief summary of the feature
+      placeholder: Brief summary of the feature 
+      required: true
+
+  - type: textarea
+    id: improvements
+    attributes:
+      label: Describe the improvements you would like to make
+      description: Explain the proposed change or new feature.
+      placeholder: Describe the improvements here
+      required: true
+
+  - type: textarea
+    id: why_needed
+    attributes:
+      label: Why is this needed?
+      description: Explain the problem this solves or the benefit it provides.
+      placeholder: Why do we need this?
+      required: true
+
+  - type: textarea
+    id: implementation
+    attributes:
+      label: How would you implement this?
+      description: Describe a possible implementation approach or design notes.
+      placeholder: Implementation approach, API changes, UX notes
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots for UI changes
+      description: Include mockups or screenshots for UI changes (links or pasted images).
+      placeholder: Links to images or pasted content
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: If this feature request relates to an existing flow, describe how to reproduce it.
+      placeholder: 1) ...\n2) ...\n3) ...
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm the following before submitting.
+      options:
+        - label: I have read the contributing guidelines
+          value: read_contributing
+        - label: I have checked for duplicate issues
+          value: checked_duplicates
+        - label: I would like to work on a pull request to implement this
+          value: will_work_on_pr
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Any other context that may help.
+      placeholder: Add any extra details here

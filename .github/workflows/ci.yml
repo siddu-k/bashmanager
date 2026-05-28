@@ -1,0 +1,60 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  python-tests-and-security:
+    name: Python Tests & Security
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: 'pip'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install bandit pytest
+
+    - name: Run Pytest
+      run: |
+        pytest tests/ -v
+
+    - name: Run Bandit Security Scan
+      run: |
+        # Scan the backend python files for vulnerabilities
+        bandit -r app.py
+
+  node-security:
+    name: Node.js Security & Linting
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+        cache: 'npm'
+
+    - name: Install Node Dependencies
+      run: |
+        npm ci
+
+    - name: Run NPM Audit (High/Critical)
+      run: |
+        # Check for known vulnerabilities in dependencies
+        npm audit --audit-level=high || echo "Audit found high/critical issues."
