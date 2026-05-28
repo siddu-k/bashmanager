@@ -1774,6 +1774,33 @@ function closeModal() {
 // ─── Event Bindings ────────────────────────────────────────
 
 function bindEvents() {
+    // ─── TERMINAL OUTPUT COPY TO CLIPBOARD ENGINE (#112) ───
+    const btnCopyTerminal = document.getElementById('btn-copy-terminal');
+    if (btnCopyTerminal) {
+        btnCopyTerminal.addEventListener('click', async () => {
+            const terminalBodyText = document.getElementById('terminal-body');
+            if (!terminalBodyText) return;
+
+            // Extract pure plaintext console strings, ignoring interface widgets
+            const logContent = terminalBodyText.innerText;
+
+            try {
+                // Safely stream string payload directly into host system clipboard channels
+                await navigator.clipboard.writeText(logContent);
+                
+                // Trigger native application notification alert overlay
+                if (typeof showNotification === 'function') {
+                    showNotification('Terminal logs copied to clipboard!', 'success');
+                } else if (typeof notify === 'function') {
+                    notify('Terminal logs copied to clipboard!', 'success');
+                } else {
+                    alert('Terminal logs copied to clipboard!');
+                }
+            } catch (err) {
+                console.error('Failed to copy terminal logs: ', err);
+            }
+        });
+    }
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
