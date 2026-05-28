@@ -22,5 +22,23 @@ devshell/
 *.dat
 *.pak
 *.so
-logs/
+
+# Runtime/session state
 sessions.json
+
+# Logs & reliability data
+logs/
+logs/reliability/
+*.corrupted
+*.tmp
+
+# Workspace snapshots
+logs/workspaces/
+logs/workspaces/profiles/
+
+# Replay/session artifacts
+logs/sessions/
+
+# Local execution artifacts
+history.jsonl
+failed.json
