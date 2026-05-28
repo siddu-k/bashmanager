@@ -2247,3 +2247,48 @@ body.debugger-open #app-main {
     color: var(--text-secondary);
     opacity: 0.8;
 }
+/* ─── FLOATING QUICK-SCROLL NAVIGATION COMPONENT (#116) ─── */
+#terminal-body {
+    position: relative; /* Contextually anchors absolute layouts */
+}
+
+#terminal-scroll-actions {
+    position: absolute;
+    bottom: 16px;
+    right: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    z-index: 10;
+    transition: opacity 0.2s ease-in-out, transform 0.2s ease-in-out;
+}
+
+/* Make controllers translucent when typing to preserve viewport visibility */
+#terminal-scroll-actions.input-focused {
+    opacity: 0.25;
+}
+
+#terminal-scroll-actions:hover {
+    opacity: 1.0 !important;
+}
+
+.btn-scroll-target {
+    background-color: var(--bg-secondary, #161b22);
+    border: 1px solid var(--border-color, #30363d);
+    color: var(--text-muted, #8b949e);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.btn-scroll-target:hover {
+    background-color: var(--border-color, #30363d);
+    color: var(--text-main, #c9d1d9);
+    border-color: var(--accent-blue, #58a6ff);
+}

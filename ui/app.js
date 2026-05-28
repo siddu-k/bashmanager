@@ -1774,6 +1774,35 @@ function closeModal() {
 // ─── Event Bindings ────────────────────────────────────────
 
 function bindEvents() {
+    // ─── FLOATING QUICK-SCROLL NAVIGATION PANEL ENGINE (#116) ───
+    const terminalBodyElement = document.getElementById('terminal-body');
+    const btnScrollTop = document.getElementById('scroll-to-top');
+    const btnScrollBottom = document.getElementById('scroll-to-bottom');
+    const scrollActionsContainer = document.getElementById('terminal-scroll-actions');
+    const cliCommandInput = document.getElementById('cli-input');
+
+    // 1. Math modifier scroll event triggers
+    if (btnScrollTop && terminalBodyElement) {
+        btnScrollTop.addEventListener('click', () => {
+            terminalBodyElement.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    }
+
+    if (btnScrollBottom && terminalBodyElement) {
+        btnScrollBottom.addEventListener('click', () => {
+            terminalBodyElement.scrollTo({ top: terminalBodyElement.scrollHeight, behavior: 'smooth' });
+        });
+    }
+
+    // 2. Clear typing space visibility management (translucent on focus)
+    if (cliCommandInput && scrollActionsContainer) {
+        cliCommandInput.addEventListener('focus', () => {
+            scrollActionsContainer.classList.add('input-focused');
+        });
+        cliCommandInput.addEventListener('blur', () => {
+            scrollActionsContainer.classList.remove('input-focused');
+        });
+    }
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
