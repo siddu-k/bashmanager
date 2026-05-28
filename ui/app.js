@@ -30,7 +30,7 @@ const API = {
 let state = {
     scripts: {},
     activeScript: null,
-    expandedCategories: new Set(),
+    expandedCategories: new Set(['Favorites']),
     searchQuery: '',
     cmdHistory: [],
     cmdHistoryIndex: -1,
@@ -72,6 +72,7 @@ let state = {
     reliabilityFilter: 'all',
     reliabilitySearch: '',
     reliabilityDiagnostics: null,
+    terminalStatuses: {},
 };
 
 const unlockCredentials = new Map();
@@ -79,6 +80,96 @@ const unlockCredentials = new Map();
 function isScriptUnlocked(relPath) {
     return !!state.unlockedScripts[relPath];
 }
+
+function getTerminalDisplayName(termId) {
+    termId = Number(termId);
+    const index = state.terminals.indexOf(termId);
+    return index !== -1 ? `Terminal ${index + 1}` : `Terminal ${termId}`;
+}
+
+function renumberTabs() {
+    state.terminals.forEach((id, index) => {
+        const tabBtn = document.getElementById(`tab-btn-${id}`) || document.querySelector(`.cli-tab[data-id="${id}"]`);
+        if (tabBtn) {
+            const spans = tabBtn.getElementsByTagName('span');
+            for (let span of spans) {
+                if (span.textContent.trim().startsWith('Terminal')) {
+                    span.textContent = getTerminalDisplayName(id);
+                    break;
+                }
+            }
+        }
+    });
+}
+
+function updateTabStatusIndicator(termId) {
+    termId = Number(termId);
+    const indicator = document.getElementById(`tab-status-${termId}`);
+    if (!indicator) return;
+
+    const status = state.terminalStatuses[termId];
+    if (status === 'running') {
+        indicator.innerHTML = `<span class="tab-spinner"></span>`;
+    } else if (status === 'success') {
+        indicator.innerHTML = `<span class="tab-success">✓</span>`;
+    } else if (status === 'failed') {
+        indicator.innerHTML = `<span class="tab-failed">✗</span>`;
+    } else {
+        indicator.innerHTML = '';
+    }
+}
+
+function showCustomConfirm(message, title = 'Confirmation') {
+    return new Promise((resolve) => {
+        const overlay = document.getElementById('confirm-modal-overlay');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const messageEl = document.getElementById('confirm-modal-message');
+        const confirmBtn = document.getElementById('confirm-modal-confirm');
+        const cancelBtn = document.getElementById('confirm-modal-cancel');
+        const closeBtn = document.getElementById('confirm-modal-close');
+
+        if (!overlay || !titleEl || !messageEl || !confirmBtn || !cancelBtn || !closeBtn) {
+            resolve(confirm(message));
+            return;
+        }
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+
+        overlay.classList.add('active');
+        confirmBtn.focus();
+
+        const cleanup = (value) => {
+            overlay.classList.remove('active');
+            confirmBtn.removeEventListener('click', onConfirm);
+            cancelBtn.removeEventListener('click', onCancel);
+            closeBtn.removeEventListener('click', onCancel);
+            document.removeEventListener('keydown', onKeyDown);
+            resolve(value);
+        };
+
+        const onConfirm = () => cleanup(true);
+        const onCancel = () => cleanup(false);
+        const onKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                onCancel();
+            }
+        };
+
+        confirmBtn.addEventListener('click', onConfirm);
+        cancelBtn.addEventListener('click', onCancel);
+        closeBtn.addEventListener('click', onCancel);
+        document.addEventListener('keydown', onKeyDown);
+    });
+}
+
+function changeTerminalFontSize(delta) {
+    let terminalFontSize = parseInt(localStorage.getItem('terminal-font-size')) || 13;
+    terminalFontSize = Math.max(9, Math.min(24, terminalFontSize + delta));
+    localStorage.setItem('terminal-font-size', terminalFontSize);
+    document.documentElement.style.setProperty('--terminal-font-size', `${terminalFontSize}px`);
+}
+
 
 function getUnlockPassword(relPath) {
     return unlockCredentials.get(relPath) || '';
@@ -170,6 +261,77 @@ if (!window.__devshell_lifecycle_registered) {
 }
 
 // ─── Init ──────────────────────────────────────────────────
+const ANALYTICS_TEMPLATE = `
+                <div class="analytics-grid">
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Total Runs</h3>
+                            <svg class="analytics-card-icon total" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 11h10"/><path d="M7 15h10"/><path d="M7 7h10"/></svg>
+                        </div>
+                        <div class="analytics-card-value total" id="analytics-total">0</div>
+                        <div class="analytics-progress-bar neutral-bar">
+                            <div class="analytics-progress-fill" id="analytics-total-fill" style="width: 100%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-total-rate">All executions</div>
+                    </div>
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Successful</h3>
+                            <svg class="analytics-card-icon success" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                        </div>
+                        <div class="analytics-card-value success" id="analytics-success">0</div>
+                        <div class="analytics-progress-bar success-bar">
+                            <div class="analytics-progress-fill" id="analytics-success-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-success-rate">0% rate</div>
+                    </div>
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Failed</h3>
+                            <svg class="analytics-card-icon failed" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                        </div>
+                        <div class="analytics-card-value failed" id="analytics-failed">0</div>
+                        <div class="analytics-progress-bar failed-bar">
+                            <div class="analytics-progress-fill" id="analytics-failed-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-failed-rate">0% rate</div>
+                    </div>
+                    <div class="analytics-card">
+                        <div class="analytics-card-header">
+                            <h3>Average Runtime</h3>
+                            <svg class="analytics-card-icon runtime" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </div>
+                        <div class="analytics-card-value runtime" id="analytics-avg">0s</div>
+                        <div class="analytics-progress-bar runtime-bar">
+                            <div class="analytics-progress-fill" id="analytics-avg-fill" style="width: 100%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-avg-rate">Latency average</div>
+                    </div>
+                </div>
+                <div class="analytics-lists-grid">
+                    <div class="analytics-section">
+                        <h3>Top Executed Scripts</h3>
+                        <div id="analytics-top-scripts"></div>
+                    </div>
+                    <div class="analytics-section">
+                        <h3>Slowest Executions</h3>
+                        <div id="analytics-slowest"></div>
+                    </div>
+                    <div class="analytics-section">
+                        <h3>Recent Failures</h3>
+                        <div id="analytics-failures"></div>
+                    </div>
+                </div>
+`;
+
+const ANALYTICS_EMPTY_TEMPLATE = `
+<div class="analytics-dashboard-empty">
+    <svg class="analytics-empty-icon" xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="18" y1="20" y2="10"/><line x1="12" x2="12" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="14"/></svg>
+    <h3>No Execution History</h3>
+    <p>Analytics will appear here after you run commands or execute scripts.</p>
+</div>
+`;
+
 async function openAnalytics() {
     try {
         const res = await fetch('/api/history/analytics');
@@ -181,32 +343,60 @@ async function openAnalytics() {
         }
 
         const summary = data.summary;
+        const total = summary.total || 0;
 
-        document.getElementById('analytics-total').textContent = summary.total;
+        const contentEl = document.getElementById('analytics-content');
+        if (!contentEl) return;
+
+        if (total === 0) {
+            contentEl.innerHTML = ANALYTICS_EMPTY_TEMPLATE;
+            document.getElementById('analytics-modal-overlay').classList.add('active');
+            return;
+        }
+
+        contentEl.innerHTML = ANALYTICS_TEMPLATE;
+
+        const successRate = total > 0 ? Math.round((summary.successful / total) * 100) : 0;
+        const failedRate = total > 0 ? Math.round((summary.failed / total) * 100) : 0;
+
+        document.getElementById('analytics-total').textContent = total;
         document.getElementById('analytics-success').textContent = summary.successful;
         document.getElementById('analytics-failed').textContent = summary.failed;
         document.getElementById('analytics-avg').textContent = `${summary.avg_duration}s`;
 
+        const successFill = document.getElementById('analytics-success-fill');
+        const successRateEl = document.getElementById('analytics-success-rate');
+        if (successFill) successFill.style.width = `${successRate}%`;
+        if (successRateEl) successRateEl.textContent = `${successRate}% rate`;
+
+        const failedFill = document.getElementById('analytics-failed-fill');
+        const failedRateEl = document.getElementById('analytics-failed-rate');
+        if (failedFill) failedFill.style.width = `${failedRate}%`;
+        if (failedRateEl) failedRateEl.textContent = `${failedRate}% rate`;
+
         document.getElementById('analytics-top-scripts').innerHTML =
             data.top_scripts.map(([name, count]) => `
                 <div class="analytics-item">
-                    ${escapeHtml(name)} — ${count} runs
+                    <span class="analytics-item-name">${escapeHtml(name)}</span>
+                    <span class="analytics-item-meta" style="color: var(--accent);">${count} ${count === 1 ? 'run' : 'runs'}</span>
                 </div>
-            `).join('');
+            `).join('') || '<div class="analytics-empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-style: italic;">No execution data available.</div>';
 
         document.getElementById('analytics-slowest').innerHTML =
             data.slowest.map(entry => `
                 <div class="analytics-item">
-                    ${escapeHtml(entry.display_name)} — ${entry.duration_seconds}s
+                    <span class="analytics-item-name">${escapeHtml(entry.display_name)}</span>
+                    <span class="analytics-item-meta" style="color: var(--accent-orange);">${entry.duration_seconds}s</span>
                 </div>
-            `).join('');
+            `).join('') || '<div class="analytics-empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-style: italic;">No slow executions recorded.</div>';
 
         document.getElementById('analytics-failures').innerHTML =
             data.recent_failures.map(entry => `
                 <div class="analytics-item">
-                    ${escapeHtml(entry.display_name)} — Exit ${entry.exit_code}
+                    <span class="analytics-item-name">${escapeHtml(entry.display_name)}</span>
+                    <span class="analytics-item-meta" style="color: var(--accent-red);">Exit ${entry.exit_code}</span>
                 </div>
-            `).join('');
+            `).join('') || '<div class="analytics-empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-style: italic;">No recent failures recorded.</div>';
 
         document.getElementById('analytics-modal-overlay').classList.add('active');
 
@@ -877,6 +1067,9 @@ async function loadCommandHistory() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    let terminalFontSize = parseInt(localStorage.getItem('terminal-font-size')) || 13;
+    document.documentElement.style.setProperty('--terminal-font-size', `${terminalFontSize}px`);
+
     await loadScripts();
     await loadCommandHistory();
     bindEvents();
@@ -986,6 +1179,7 @@ async function fetchScriptContent(relPath, password = '') {
 }
 
 function getTerminalBody(termId = state.activeTerminalId) {
+    termId = Number(termId);
     return document.getElementById(`terminal-body-${termId}`)
         || (termId === 1 ? document.getElementById('terminal-body') : null);
 }
@@ -1095,6 +1289,8 @@ async function runScript(relPath) {
         controller: controller
     };
     updateRunButton();
+    state.terminalStatuses[termId] = 'running';
+    updateTabStatusIndicator(termId);
 
     if (termId === state.activeTerminalId) {
         runStatus.textContent = 'Executing...';
@@ -1190,6 +1386,8 @@ async function runScript(relPath) {
                                     }
                                 } else if (data.type === 'aborted') {
                                     receivedTerminalEvent = true;
+                                    state.terminalStatuses[termId] = 'failed';
+                                    updateTabStatusIndicator(termId);
                                     appendToCli(data.content, 'error', termId);
                                     if (typeof DebuggerConsole !== 'undefined') {
                                         DebuggerConsole.addEntry('error', `Script aborted (ID: ${data.run_id})`, 'script');
@@ -1201,6 +1399,8 @@ async function runScript(relPath) {
                                 } else if (data.type === 'metrics') {
                                     receivedTerminalEvent = true;
                                     if (data.success) {
+                                        state.terminalStatuses[termId] = 'success';
+                                        updateTabStatusIndicator(termId);
                                         appendToCli(`Script completed (Exit code: ${data.exit_code})`, 'success', termId);
                                         if (typeof DebuggerConsole !== 'undefined') {
                                             DebuggerConsole.addEntry('info', `✓ Script completed — exit code: ${data.exit_code} | time: ${data.resources?.execution_time_formatted || ''} | cpu: ${data.resources?.cpu_percent || 0}% | mem: ${data.resources?.memory_used_mb || 0}MB`, 'metrics');
@@ -1223,6 +1423,8 @@ async function runScript(relPath) {
                                             }, 3000);
                                         }
                                     } else {
+                                        state.terminalStatuses[termId] = 'failed';
+                                        updateTabStatusIndicator(termId);
                                         appendToCli(`Script failed (Exit code: ${data.exit_code})`, 'error', termId);
                                         if (typeof DebuggerConsole !== 'undefined') {
                                             DebuggerConsole.addEntry('error', `✗ Script failed — exit code: ${data.exit_code}`, 'metrics');
@@ -1262,6 +1464,8 @@ async function runScript(relPath) {
 
             const running = state.runningScripts[termId];
             if (!receivedTerminalEvent && running && !running.abortRequested) {
+                state.terminalStatuses[termId] = 'failed';
+                updateTabStatusIndicator(termId);
                 appendToCli('Connection to script stream lost unexpectedly.', 'error', termId);
                 if (termId === state.activeTerminalId) {
                     runStatus.textContent = 'Disconnected';
@@ -1276,6 +1480,8 @@ async function runScript(relPath) {
             }
         }
     } catch (err) {
+        state.terminalStatuses[termId] = 'failed';
+        updateTabStatusIndicator(termId);
         if (err.name === 'AbortError') {
             appendToCli('Script run aborted.', 'system', termId);
             if (termId === state.activeTerminalId) {
@@ -1570,7 +1776,7 @@ async function saveScript(category, filename, content) {
 }
 
 async function deleteScript(relPath) {
-    if (!confirm('Are you sure you want to delete this script permanently?')) return;
+    if (!await showCustomConfirm('Are you sure you want to delete this script permanently?', 'Delete Script')) return;
     try {
         const res = await fetch(API.delete, {
             method: 'DELETE',
@@ -1799,8 +2005,9 @@ async function executePR(relPath, branch, message, repoUrl) {
 
             // Offer PR page opening
             if (
-                confirm(
-                    `Successfully pushed to branch '${data.branch}'.\n\nWould you like to open the Pull Request page on GitHub?`
+                await showCustomConfirm(
+                    `Successfully pushed to branch '${data.branch}'.\n\nWould you like to open the Pull Request page on GitHub?`,
+                    'PR Created'
                 )
             ) {
                 window.open(data.pr_url, '_blank');
@@ -2072,7 +2279,7 @@ function appendToCli(text, className = '', termId = state.activeTerminalId) {
 function clearCli() {
     const termBody = getTerminalBody(state.activeTerminalId);
     if (termBody) {
-        termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
+        termBody.innerHTML = '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Terminal cleared.</span></div><div class="cli-welcome-sub">Ready for new commands.</div></div>';
     }
     document.getElementById('run-status').textContent = '';
     document.getElementById('run-status').className = 'run-status';
@@ -2085,207 +2292,7 @@ function clearCli() {
 }
 
 
-// ─── Session Persistence ──────────────────────────────────
 
-async function saveSession() {
-    const sessionData = {
-        sessionId: state.sessionId || generateUUID(),
-        timestamp: Date.now(),
-
-        terminals: state.terminals.map(id => {
-            const body =
-                document.getElementById(`terminal-body-${id}`) ||
-                (id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
-
-            if (!body) return null;
-
-            const lines = Array.from(
-                body.querySelectorAll('.cli-output-block')
-            )
-                .slice(-100)
-                .map(el => ({
-                    text: el.textContent,
-                    className: el.className.replace(
-                        'cli-output-block ',
-                        ''
-                    )
-                }));
-
-            return {
-                id,
-                lines
-            };
-        }).filter(t => t !== null),
-
-        activeTerminalId: state.activeTerminalId,
-        nextTerminalId: state.nextTerminalId,
-
-        cmdHistory: state.cmdHistory,
-        cmdHistoryIndex: state.cmdHistoryIndex,
-
-        unlockedScripts: serializeUnlockedScripts()
-    };
-
-    try {
-        await fetch('/api/sessions/save', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session: sessionData
-            })
-        });
-
-        state.sessionId = sessionData.sessionId;
-        state.lastSaveTimestamp = Date.now();
-
-    } catch (e) {
-        console.error('Failed to save session:', e);
-    }
-}
-
-
-function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
-        .replace(/[xy]/g, c => {
-            const r = Math.random() * 16 | 0;
-            const v = c === 'x'
-                ? r
-                : (r & 0x3 | 0x8);
-
-            return v.toString(16);
-        });
-}
-
-
-// let saveSessionTimeout = null;
-
-function saveSessionDebounced() {
-    if (saveSessionTimeout) {
-        clearTimeout(saveSessionTimeout);
-    }
-
-    saveSessionTimeout = setTimeout(() => {
-        saveSession();
-    }, 2000);
-}
-
-
-async function restoreSession() {
-    try {
-        const res = await fetch('/api/sessions/restore');
-        const data = await res.json();
-
-        if (!data.success || !data.session) {
-            return;
-        }
-
-        const session = data.session;
-
-        state.sessionId = session.sessionId || null;
-
-        const terminalIds = session.terminals?.map(t => t.id);
-        state.terminals = terminalIds?.length ? terminalIds : [1];
-
-        state.activeTerminalId =
-            session.activeTerminalId || 1;
-
-        state.nextTerminalId =
-            Math.max(...state.terminals) + 1;
-
-        state.cmdHistory =
-            session.cmdHistory || [];
-
-        state.cmdHistoryIndex =
-            session.cmdHistoryIndex || -1;
-
-        restoreUnlockedScripts(session.unlockedScripts);
-
-        const existingTabs =
-            document.querySelectorAll('.cli-tab');
-
-        existingTabs.forEach(tab => {
-            if (tab.id !== 'tab-btn-1') {
-                tab.remove();
-            }
-        });
-
-        const existingBodies =
-            document.querySelectorAll('.cli-body');
-
-        existingBodies.forEach(body => {
-            if (body.id !== 'terminal-body') {
-                body.remove();
-            }
-        });
-
-        for (const term of session.terminals || []) {
-
-            if (term.id !== 1) {
-                // Create terminal DOM directly with the saved ID
-                // instead of calling addTerminal() which would
-                // corrupt state.nextTerminalId and state.terminals
-                const tabsContainer = document.getElementById('cli-tabs');
-                const tabBtn = document.createElement('div');
-                tabBtn.className = 'cli-tab';
-                tabBtn.id = `tab-btn-${term.id}`;
-                tabBtn.innerHTML = `
-                    <span class="cli-dots" style="margin-right: 6px;">
-                        <span class="dot dot-red"></span>
-                        <span class="dot dot-yellow"></span>
-                        <span class="dot dot-green"></span>
-                    </span>
-                    <span>Terminal ${term.id}</span>
-                    <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${term.id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
-                tabBtn.onclick = () => switchTerminal(term.id);
-                tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
-
-                const bodyContainer = document.createElement('div');
-                bodyContainer.className = 'cli-body';
-                bodyContainer.setAttribute('role', 'log');
-                bodyContainer.setAttribute('aria-live', 'polite');
-                bodyContainer.id = `terminal-body-${term.id}`;
-                bodyContainer.style.display = 'none';
-
-                document.getElementById('cli-area').insertBefore(
-                    bodyContainer,
-                    document.querySelector('.cli-input-bar')
-                );
-            }
-
-            const body =
-                document.getElementById(`terminal-body-${term.id}`) ||
-                (term.id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
-
-            if (!body) continue;
-
-            body.innerHTML = '';
-
-            for (const line of term.lines || []) {
-                const div = document.createElement('div');
-
-                div.className =
-                    `cli-output-block ${line.className}`;
-
-                div.textContent = line.text;
-
-                body.appendChild(div);
-            }
-        }
-
-        switchTerminal(state.activeTerminalId);
-
-        console.log('Session restored successfully');
-
-    } catch (e) {
-        console.error('Failed to restore session:', e);
-    }
-}
 
 // ─── Terminal Utility Actions ───────────────────────────────
 
@@ -2373,7 +2380,7 @@ function toggleAutoScroll() {
     state.autoScroll[termId] = state.autoScroll[termId] === false ? true : false;
     const isOn = state.autoScroll[termId] !== false;
     updateAutoScrollBtn(termId, isOn);
-    notify(`Auto-scroll ${isOn ? 'enabled' : 'disabled'} for Terminal ${termId}.`, 'info');
+    notify(`Auto-scroll ${isOn ? 'enabled' : 'disabled'} for ${getTerminalDisplayName(termId)}.`, 'info');
 }
 
 /**
@@ -2399,7 +2406,7 @@ function updateAutoScrollBtn(termId, isOn) {
 function clearCli() {
     const termBody = getTerminalBody(state.activeTerminalId);
     if (termBody) {
-        termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
+        termBody.innerHTML = '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Terminal cleared.</span></div><div class="cli-welcome-sub">Ready for new commands.</div></div>';
     }
     document.getElementById('run-status').textContent = '';
     document.getElementById('run-status').className = 'run-status';
@@ -2419,11 +2426,8 @@ async function saveSession() {
         timestamp: Date.now(),
 
         terminals: state.terminals.map(id => {
-            const body =
-                document.getElementById(`terminal-body-${id}`) ||
-                (id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
+            id = Number(id);
+            const body = getTerminalBody(id);
 
             if (!body) return null;
 
@@ -2445,8 +2449,8 @@ async function saveSession() {
             };
         }).filter(t => t !== null),
 
-        activeTerminalId: state.activeTerminalId,
-        nextTerminalId: state.nextTerminalId,
+        activeTerminalId: Number(state.activeTerminalId),
+        nextTerminalId: Number(state.nextTerminalId),
 
         cmdHistory: state.cmdHistory,
         cmdHistoryIndex: state.cmdHistoryIndex,
@@ -2513,97 +2517,77 @@ async function restoreSession() {
 
         state.sessionId = session.sessionId || null;
 
-        const terminalIds = session.terminals?.map(t => t.id);
+        const terminalIds = session.terminals?.map(t => Number(t.id));
         state.terminals = terminalIds?.length ? terminalIds : [1];
 
-        state.activeTerminalId =
-            session.activeTerminalId || 1;
+        state.activeTerminalId = Number(session.activeTerminalId || 1);
 
-        state.nextTerminalId =
-            Math.max(...state.terminals) + 1;
+        state.nextTerminalId = Math.max(...state.terminals, 1) + 1;
 
-        state.cmdHistory =
-            session.cmdHistory || [];
-
-        state.cmdHistoryIndex =
-            session.cmdHistoryIndex || -1;
+        state.cmdHistory = session.cmdHistory || [];
+        state.cmdHistoryIndex = session.cmdHistoryIndex || -1;
 
         restoreUnlockedScripts(session.unlockedScripts);
 
-        const existingTabs =
-            document.querySelectorAll('.cli-tab');
-
-        existingTabs.forEach(tab => {
-            if (tab.id !== 'tab-btn-1') {
-                tab.remove();
-            }
+        // Remove all existing terminal tabs from the DOM
+        document.querySelectorAll('.cli-tab').forEach(tab => {
+            tab.remove();
         });
 
-        const existingBodies =
-            document.querySelectorAll('.cli-body');
-
-        existingBodies.forEach(body => {
-            if (body.id !== 'terminal-body') {
-                body.remove();
-            }
+        // Remove all existing terminal bodies from the DOM
+        document.querySelectorAll('.cli-body').forEach(body => {
+            body.remove();
         });
+
+        const tabsContainer = document.getElementById('cli-tabs');
+        const cliArea = document.getElementById('cli-area');
 
         for (const term of session.terminals || []) {
+            const termId = Number(term.id);
 
-            if (term.id !== 1) {
-                // Create terminal DOM directly with the saved ID
-                // instead of calling addTerminal() which would
-                // corrupt state.nextTerminalId and state.terminals
-                const tabsContainer = document.getElementById('cli-tabs');
-                const tabBtn = document.createElement('div');
-                tabBtn.className = 'cli-tab';
-                tabBtn.id = `tab-btn-${term.id}`;
-                tabBtn.innerHTML = `
-                    <span class="cli-dots" style="margin-right: 6px;">
-                        <span class="dot dot-red"></span>
-                        <span class="dot dot-yellow"></span>
-                        <span class="dot dot-green"></span>
-                    </span>
-                    <span>Terminal ${term.id}</span>
-                    <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${term.id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
-                tabBtn.onclick = () => switchTerminal(term.id);
-                tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
+            const tabBtn = document.createElement('div');
+            tabBtn.className = 'cli-tab';
+            tabBtn.id = `tab-btn-${termId}`;
+            tabBtn.dataset.id = termId;
+            tabBtn.innerHTML = `
+                <span class="tab-terminal-icon">>_</span>
+                <span>${getTerminalDisplayName(termId)}</span><span class="tab-status-indicator" id="tab-status-${termId}"></span>
+                <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${termId})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
+            tabBtn.onclick = () => switchTerminal(termId);
+            tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
 
-                const bodyContainer = document.createElement('div');
-                bodyContainer.className = 'cli-body';
-                bodyContainer.setAttribute('role', 'log');
-                bodyContainer.setAttribute('aria-live', 'polite');
-                bodyContainer.id = `terminal-body-${term.id}`;
-                bodyContainer.style.display = 'none';
+            const bodyContainer = document.createElement('div');
+            bodyContainer.className = 'cli-body';
+            bodyContainer.setAttribute('role', 'log');
+            bodyContainer.setAttribute('aria-live', 'polite');
+            bodyContainer.id = `terminal-body-${termId}`;
+            bodyContainer.style.display = 'none';
 
-                document.getElementById('cli-area').insertBefore(
-                    bodyContainer,
-                    document.querySelector('.cli-input-bar')
-                );
-            }
+            cliArea.insertBefore(
+                bodyContainer,
+                document.querySelector('.cli-input-bar')
+            );
 
-            const body =
-                document.getElementById(`terminal-body-${term.id}`) ||
-                (term.id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
-
-            if (!body) continue;
-
-            body.innerHTML = '';
-
-            for (const line of term.lines || []) {
-                const div = document.createElement('div');
-
-                div.className =
-                    `cli-output-block ${line.className}`;
-
-                div.textContent = line.text;
-
-                body.appendChild(div);
+            // Populate terminal log lines
+            bodyContainer.innerHTML = '';
+            if (!term.lines || term.lines.length === 0) {
+                if (termId === 1) {
+                    bodyContainer.innerHTML = '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Welcome to DevShell.</span></div><div class="cli-welcome-sub">Select a script to run, or type a command below.</div></div>';
+                } else {
+                    bodyContainer.innerHTML = '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Terminal ready.</span></div><div class="cli-welcome-sub">Ready for interaction.</div></div>';
+                }
+            } else {
+                for (const line of term.lines || []) {
+                    const div = document.createElement('div');
+                    div.className = `cli-output-block ${line.className}`;
+                    div.textContent = line.text;
+                    bodyContainer.appendChild(div);
+                }
             }
         }
 
+        renumberTabs();
+        state.terminals.forEach(termId => updateTabStatusIndicator(termId));
         switchTerminal(state.activeTerminalId);
 
         console.log('Session restored successfully');
@@ -2625,15 +2609,12 @@ function addTerminal() {
     tabBtn.className = 'cli-tab';
     tabBtn.id = `tab-btn-${id}`;
     tabBtn.innerHTML = `
-        <span class="cli-dots" style="margin-right: 6px;">
-            <span class="dot dot-red"></span>
-            <span class="dot dot-yellow"></span>
-            <span class="dot dot-green"></span>
-        </span>
-        <span>Terminal ${id}</span> 
+        <span class="tab-terminal-icon">>_</span>
+        <span>${getTerminalDisplayName(id)}</span><span class="tab-status-indicator" id="tab-status-${id}"></span>
         <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
     tabBtn.onclick = () => switchTerminal(id);
     tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
+    renumberTabs();
 
     const bodyContainer = document.createElement('div');
     bodyContainer.className = 'cli-body';
@@ -2641,7 +2622,7 @@ function addTerminal() {
     bodyContainer.setAttribute('aria-live', 'polite');
     bodyContainer.id = `terminal-body-${id}`;
     bodyContainer.style.display = 'none';
-    bodyContainer.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>';
+    bodyContainer.innerHTML = '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Terminal ready.</span></div><div class="cli-welcome-sub">Ready for interaction.</div></div>';
 
     document.getElementById('cli-area').insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
     switchTerminal(id);
@@ -2650,6 +2631,7 @@ function addTerminal() {
 }
 
 function switchTerminal(id) {
+    id = Number(id);
     state.activeTerminalId = id;
 
     document.querySelectorAll('.cli-tab').forEach(t => t.classList.remove('active'));
@@ -2683,6 +2665,7 @@ function switchTerminal(id) {
 }
 
 function closeTerminal(id) {
+    id = Number(id);
     if (state.terminals.length <= 1) return;
 
     if (state.runningScripts && state.runningScripts[id]) {
@@ -2691,9 +2674,11 @@ function closeTerminal(id) {
 
     state.terminals = state.terminals.filter(t => t !== id);
     delete state.autoScroll[id];
+    delete state.terminalStatuses[id];
 
     const tabBtn = document.getElementById(`tab-btn-${id}`) || document.querySelector(`.cli-tab[data-id="${id}"]`);
     if (tabBtn) tabBtn.remove();
+    renumberTabs();
 
     const bodyContainer = getTerminalBody(id);
     if (bodyContainer) bodyContainer.remove();
@@ -2776,7 +2761,8 @@ function renderSidebar() {
     const tree = document.getElementById('category-tree');
     const countEl = document.getElementById('script-count');
     const favsSection = document.getElementById('favorites-section');
-    const favsList = document.getElementById('favorites-list');
+
+    if (favsSection) favsSection.style.display = 'none';
 
     let totalScripts = 0;
     let favScripts = [];
@@ -2784,6 +2770,63 @@ function renderSidebar() {
 
     const query = state.searchQuery.toLowerCase();
 
+    // Collect all favorites matching search query
+    for (const [cat, scripts] of Object.entries(state.scripts)) {
+        scripts.forEach(s => {
+            if (s.favorite) {
+                const matches = !query ||
+                    s.name.toLowerCase().includes(query) ||
+                    (s.desc && s.desc.toLowerCase().includes(query)) ||
+                    (s.tag && s.tag.toLowerCase().includes(query)) ||
+                    s.file.toLowerCase().includes(query);
+                if (matches) {
+                    favScripts.push(s);
+                }
+            }
+        });
+    }
+
+    // Render Favorites virtual category folder
+    if (favScripts.length > 0) {
+        const isExpanded = state.expandedCategories.has('Favorites') || !!query;
+        html += `
+            <div class="category-section" data-category="Favorites">
+                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('Favorites')" onkeydown="handleKeyboardAction(event, () => toggleCategory('Favorites'))">
+                    <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+                    </span>
+                    <span class="category-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
+                    <span class="category-name">Favorites</span>
+                    <span class="category-count">${favScripts.length}</span>
+                </div>
+                <ul class="script-list ${isExpanded ? '' : 'collapsed'}" style="max-height: ${favScripts.length * 44}px;">
+                    ${favScripts.map(s => {
+            let lockIcon = s.locked ? `<span class="script-item-icon" style="color: var(--accent-orange); margin-right: 4px;">${ICONS.lock}</span>` : '';
+            const displayName = s.name && s.name.trim() ? s.name : s.file.replace('.sh', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            return `
+                        <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
+                            onclick="selectScript('${s.relative_path}')"
+                            onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
+                            title="${escapeAttr(s.desc)}"
+                            data-file="${escapeAttr(s.file)}"
+                            data-path="${escapeAttr(s.relative_path)}"
+                            data-tag="${escapeAttr(s.tag || '')}"
+                            data-desc="${escapeAttr(s.desc || '')}">
+                            ${lockIcon}
+                            <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
+                            <span class="script-item-name">${escapeHtml(displayName)}</span>
+                            <span class="script-item-fav visible"
+                                  onclick="event.stopPropagation(); toggleFavorite('${s.relative_path}')">
+                                ${ICONS.favorite}
+                            </span>
+                        </li>
+                    `}).join('')}
+                </ul>
+            </div>
+        `;
+    }
+
+    // Render other categories
     for (const [cat, scripts] of Object.entries(state.scripts)) {
         const filteredScripts = query
             ? scripts.filter(s =>
@@ -2799,8 +2842,8 @@ function renderSidebar() {
         const isExpanded = state.expandedCategories.has(cat) || !!query;
 
         html += `
-            <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
-                <div class="category-header" onclick="toggleCategory('${cat}')">
+            <div class="category-section" data-category="${cat}">
+                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
                     <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                     </span>
@@ -2811,15 +2854,19 @@ function renderSidebar() {
                 <ul class="script-list ${isExpanded ? '' : 'collapsed'}" style="max-height: ${filteredScripts.length * 44}px;">
                     ${filteredScripts.map(s => {
             let lockIcon = s.locked ? `<span class="script-item-icon" style="color: var(--accent-orange); margin-right: 4px;">${ICONS.lock}</span>` : '';
-
+            const displayName = s.name && s.name.trim() ? s.name : s.file.replace('.sh', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
             return `
                         <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
                             onclick="selectScript('${s.relative_path}')"
                             onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
-                            title="${escapeAttr(s.desc)}">
+                            title="${escapeAttr(s.desc)}"
+                            data-file="${escapeAttr(s.file)}"
+                            data-path="${escapeAttr(s.relative_path)}"
+                            data-tag="${escapeAttr(s.tag || '')}"
+                            data-desc="${escapeAttr(s.desc || '')}">
                             ${lockIcon}
                             <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
-                            <span class="script-item-name">${escapeHtml(s.name)}</span>
+                            <span class="script-item-name">${escapeHtml(displayName)}</span>
                             <span class="script-item-fav ${s.favorite ? 'visible' : ''}"
                                   onclick="event.stopPropagation(); toggleFavorite('${s.relative_path}')">
                                 ${ICONS.favorite}
@@ -2829,27 +2876,10 @@ function renderSidebar() {
                 </ul>
             </div>
         `;
-
-        // Populate favs
-        scripts.forEach(s => { if (s.favorite) favScripts.push(s); });
     }
 
     tree.innerHTML = html || '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">No scripts found. Create one to get started.</div>';
     countEl.textContent = totalScripts;
-
-    if (favScripts.length > 0) {
-        favsSection.style.display = '';
-        favsList.innerHTML = favScripts.map(s => `
-            <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                onclick="selectScript('${s.relative_path}')"
-                onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))">
-                <span class="script-item-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
-                <span class="script-item-name">${escapeHtml(s.name)}</span>
-            </li>
-        `).join('');
-    } else {
-        favsSection.style.display = 'none';
-    }
 }
 
 function renderWelcomeStats() {
@@ -2936,8 +2966,9 @@ async function selectScript(relPath) {
     detailPanel.style.display = '';
 
     // Fill details
+    const scriptDisplayName = script.name && script.name.trim() ? script.name : script.file.replace('.sh', '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     document.getElementById('detail-category').textContent = script.category;
-    document.getElementById('detail-name').textContent = script.name;
+    document.getElementById('detail-name').textContent = scriptDisplayName;
     document.getElementById('detail-desc').textContent = script.desc || 'No description provided';
     document.getElementById('detail-path').textContent = script.relative_path;
 
@@ -3071,117 +3102,100 @@ function bindEvents() {
     if (cliSearchInput) {
         cliSearchInput.addEventListener('input', () => highlightTerminalSearch());
     }
-    function scoreMatch(query, candidate) {
-        const normalizedQuery = String(query || '').toLowerCase();
-        const normalizedCandidate = String(candidate || '').toLowerCase();
-
-        if (!normalizedQuery) return 0;
-        if (normalizedCandidate.startsWith(normalizedQuery)) return 2;
-        if (normalizedCandidate.includes(normalizedQuery)) return 1;
-        return 0;
-    }
-
-    function fuzzyMatch(query, str) {
-        const normalizedQuery = String(query || '').toLowerCase();
-        const normalizedStr = String(str || '').toLowerCase();
-
-        if (!normalizedQuery) return true;
-
-        let queryIndex = 0;
-        for (let strIndex = 0; strIndex < normalizedStr.length && queryIndex < normalizedQuery.length; strIndex++) {
-            if (normalizedStr[strIndex] === normalizedQuery[queryIndex]) {
-                queryIndex++;
-            }
-        }
-
-        return queryIndex === normalizedQuery.length;
-    }
-
-    // Real-Time Sidebar Script Filter Logic (Fixed Variant)
+    // Real-Time Sidebar Script Filter Logic
     const scriptSearchBar = document.getElementById('script-search-bar');
     if (scriptSearchBar) {
         scriptSearchBar.addEventListener('input', (e) => {
             const filterText = e.target.value.toLowerCase().trim();
-            const categoryLists = document.querySelectorAll('#category-tree .script-list');
-            const categoryContainers = Array.from(document.querySelectorAll('#category-tree > .category-header'));
+            const categorySections = document.querySelectorAll('#category-tree .category-section');
 
-            if (filterText === '') {
-                const scriptItems = document.querySelectorAll('#category-tree .script-item');
+            categorySections.forEach(section => {
+                const scriptItems = section.querySelectorAll('.script-item');
+                let visibleCount = 0;
+
                 scriptItems.forEach(item => {
-                    item.style.display = 'flex';
-                    item.removeAttribute('data-score');
+                    if (filterText === '') {
+                        item.style.display = 'flex';
+                        visibleCount++;
+                        return;
+                    }
+
+                    // Read 5 fields
+                    const name = (item.querySelector('.script-item-name')?.textContent || '').toLowerCase();
+                    const file = (item.getAttribute('data-file') || '').toLowerCase();
+                    const path = (item.getAttribute('data-path') || '').toLowerCase();
+                    const tag = (item.getAttribute('data-tag') || '').toLowerCase();
+                    const desc = (item.getAttribute('data-desc') || '').toLowerCase();
+
+                    if (name.includes(filterText) ||
+                        file.includes(filterText) ||
+                        path.includes(filterText) ||
+                        tag.includes(filterText) ||
+                        desc.includes(filterText)) {
+                        item.style.display = 'flex';
+                        visibleCount++;
+                    } else {
+                        item.style.display = 'none';
+                    }
                 });
 
-                categoryLists.forEach(list => {
-                    list.style.maxHeight = '';
-                });
-
-                categoryContainers.forEach(container => {
-                    container.style.display = '';
-                });
-
-                return;
-            }
-
-            const scriptItems = Array.from(document.querySelectorAll('#category-tree .script-item'));
-            const visibleByParent = new Map();
-            const bestScoreByParent = new Map();
-
-            scriptItems.forEach(item => {
-                const scriptNameEl = item.querySelector('.script-item-name');
-                if (!scriptNameEl) return;
-
-                const scriptName = scriptNameEl.textContent.toLowerCase();
-
-                if (!fuzzyMatch(filterText, scriptName)) {
-                    item.style.display = 'none';
-                    item.removeAttribute('data-score');
-                    return;
+                // Handle category section visibility
+                if (filterText !== '' && visibleCount === 0) {
+                    section.style.display = 'none';
+                } else {
+                    section.style.display = 'block';
                 }
 
-                const score = scoreMatch(filterText, scriptName);
-                item.dataset.score = String(score);
-                item.style.display = 'flex';
-
-                const parent = item.parentElement;
-                if (!visibleByParent.has(parent)) {
-                    visibleByParent.set(parent, []);
+                // Handle category list auto-expansion
+                const list = section.querySelector('.script-list');
+                const arrow = section.querySelector('.category-arrow');
+                const header = section.querySelector('.category-header');
+                if (list) {
+                    if (filterText !== '' && visibleCount > 0) {
+                        list.style.maxHeight = 'none';
+                        list.classList.remove('collapsed');
+                        if (arrow) arrow.classList.add('expanded');
+                        if (header) header.setAttribute('aria-expanded', 'true');
+                    } else if (filterText === '') {
+                        // Restore state based on state.expandedCategories
+                        const catName = section.dataset.category;
+                        const isExpanded = state.expandedCategories.has(catName);
+                        if (isExpanded) {
+                            list.style.maxHeight = `${scriptItems.length * 44}px`;
+                            list.classList.remove('collapsed');
+                            if (arrow) arrow.classList.add('expanded');
+                            if (header) header.setAttribute('aria-expanded', 'true');
+                        } else {
+                            list.style.maxHeight = '0px';
+                            list.classList.add('collapsed');
+                            if (arrow) arrow.classList.remove('expanded');
+                            if (header) header.setAttribute('aria-expanded', 'false');
+                        }
+                    }
                 }
-                visibleByParent.get(parent).push(item);
-                bestScoreByParent.set(parent, Math.max(bestScoreByParent.get(parent) ?? -1, score));
-            });
-
-            visibleByParent.forEach((items, parent) => {
-                items.sort((a, b) => Number(b.dataset.score || 0) - Number(a.dataset.score || 0));
-                items.forEach(item => parent.appendChild(item));
-            });
-
-            categoryContainers.forEach(container => {
-                const list = container.querySelector('.script-list');
-                const hasVisibleItems = list && visibleByParent.has(list);
-                container.style.display = hasVisibleItems ? '' : 'none';
-            });
-
-            const rankedCategories = categoryContainers
-                .map(container => {
-                    const list = container.querySelector('.script-list');
-                    return {
-                        container,
-                        score: list ? (bestScoreByParent.get(list) ?? -1) : -1
-                    };
-                })
-                .filter(entry => entry.score >= 0)
-                .sort((a, b) => b.score - a.score);
-
-            const tree = document.getElementById('category-tree');
-            rankedCategories.forEach(({ container }) => tree.appendChild(container));
-
-            // Handle category auto-expansion smoothly without resetting terminal CSS
-            categoryLists.forEach(list => {
-                list.style.maxHeight = 'none';
-                list.classList.remove('collapsed');
             });
         });
+    }
+
+    // Collapsible Sidebar Toggle
+    const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
+    if (btnToggleSidebar) {
+        btnToggleSidebar.addEventListener('click', () => {
+            const sidebar = document.getElementById('sidebar');
+            const resizerLeft = document.getElementById('resizer-left');
+            if (sidebar) sidebar.classList.toggle('collapsed');
+            if (resizerLeft) resizerLeft.classList.toggle('collapsed');
+        });
+    }
+
+    // Font Size Controls
+    const btnFontDecrease = document.getElementById('btn-font-decrease');
+    const btnFontIncrease = document.getElementById('btn-font-increase');
+    if (btnFontDecrease) {
+        btnFontDecrease.addEventListener('click', () => changeTerminalFontSize(-1));
+    }
+    if (btnFontIncrease) {
+        btnFontIncrease.addEventListener('click', () => changeTerminalFontSize(1));
     }
 
     // ─── THEME TOGGLE ENGINE LAYER ───
@@ -3213,39 +3227,6 @@ function bindEvents() {
                 if (moonIcon) moonIcon.style.display = 'none';
                 if (sunIcon) sunIcon.style.display = 'block';
             }
-        });
-    }
-
-    // Real-Time Sidebar Script Filter Logic (Fixed Variant)
-    const scriptSearchBar = document.getElementById('script-search-bar');
-    if (scriptSearchBar) {
-        scriptSearchBar.addEventListener('input', (e) => {
-            const filterText = e.target.value.toLowerCase().trim();
-            const scriptItems = document.querySelectorAll('#category-tree .script-item');
-            
-            scriptItems.forEach(item => {
-                const scriptNameEl = item.querySelector('.script-item-name');
-                if (!scriptNameEl) return;
-                
-                const scriptName = scriptNameEl.textContent.toLowerCase();
-                
-                if (scriptName.includes(filterText)) {
-                    item.style.display = 'flex';
-                } else {
-                    item.style.display = 'none';
-                }
-            });
-
-            // Handle category auto-expansion smoothly without resetting terminal CSS
-            const categoryLists = document.querySelectorAll('#category-tree .script-list');
-            categoryLists.forEach(list => {
-                if (filterText !== '') {
-                    list.style.maxHeight = 'none';
-                    list.classList.remove('collapsed');
-                } else {
-                    list.style.maxHeight = '';
-                }
-            });
         });
     }
 
@@ -3412,7 +3393,7 @@ function bindEvents() {
     const historyClearBtn = document.getElementById('history-clear-btn');
     if (historyClearBtn) {
         historyClearBtn.addEventListener('click', async () => {
-            const confirmation = confirm('Are you sure you want to permanently clear your command history log?');
+            const confirmation = await showCustomConfirm('Are you sure you want to permanently clear your command history log?', 'Clear History');
             if (!confirmation) return;
 
             try {
@@ -3781,18 +3762,18 @@ function notify(message, type = 'info') {
 
 function serializeWorkspace() {
     const terminalSnapshots = state.terminals.map(id => {
-        const terminalBody = document.getElementById(`terminal-body-${id}`);
+        const terminalBody = getTerminalBody(id);
         return {
-            id,
+            id: Number(id),
             content: terminalBody?.innerHTML || '',
             pendingInput: document.getElementById('cli-input')?.value || ''
         };
     });
 
     return {
-        terminals: state.terminals,
+        terminals: state.terminals.map(Number),
         terminalSnapshots,
-        activeTerminalId: state.activeTerminalId,
+        activeTerminalId: Number(state.activeTerminalId),
         activeScript: state.activeScript,
         searchQuery: state.searchQuery,
         debuggerVisible:
@@ -3908,6 +3889,9 @@ function sanitizeWorkspaceSnapshot(data) {
 }
 
 function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = []) {
+    terminals = terminals.map(Number);
+    activeTerminalId = Number(activeTerminalId);
+
     const tabsContainer = document.getElementById('cli-tabs');
     const cliArea = document.getElementById('cli-area');
 
@@ -3935,19 +3919,10 @@ function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = [
         tabBtn.dataset.id = id;
         tabBtn.id = `tab-btn-${id}`;
         tabBtn.innerHTML = `
-            <span class="cli-tab-title">
-                <span class="dot dot-red"></span>
-                <span class="dot dot-yellow"></span>
-                <span class="dot dot-green"></span>
-                <span>Terminal ${id}</span>
-            </span>
-            <button class="cli-tab-close" title="Close" aria-label="Close terminal">×</button>
-        `;
+            <span class="tab-terminal-icon">>_</span>
+            <span>${getTerminalDisplayName(id)}</span><span class="tab-status-indicator" id="tab-status-${id}"></span>
+            <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
         tabBtn.onclick = () => switchTerminal(id);
-        tabBtn.querySelector('.cli-tab-close')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            closeTerminal(id);
-        });
         tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
 
         const bodyContainer = document.createElement('div');
@@ -3956,15 +3931,16 @@ function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = [
         bodyContainer.style.display = 'none';
         bodyContainer.setAttribute('role', 'log');
         bodyContainer.setAttribute('aria-live', 'polite');
-        const snapshot = dataSnapshots?.find(snap => snap.id === id);
-        bodyContainer.innerHTML = snapshot?.content ||
-            `<div class="cli-welcome">
-                <span class="cli-prompt">$</span>
-                <span class="cli-welcome-text">Restored terminal session.</span>
-            </div>`;
+        const snapshot = dataSnapshots?.find(snap => Number(snap.id) === id);
+        bodyContainer.innerHTML = snapshot?.content || '<div class="cli-welcome"><div><span class="cli-prompt">$</span><span class="cli-welcome-text">Restored terminal session.</span></div><div class="cli-welcome-sub">Ready for interaction.</div></div>';
         cliArea.insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
 
         state.terminals.push(id);
+    });
+
+    renumberTabs();
+    terminals.forEach(id => {
+        updateTabStatusIndicator(id);
     });
 
     // Restore pending input from first snapshot
@@ -4127,7 +4103,7 @@ async function loadWorkspaceProfile(name) {
 }
 
 async function deleteWorkspaceProfile(name) {
-    const confirmed = confirm(`Delete workspace profile "${name}"?`);
+    const confirmed = await showCustomConfirm(`Delete workspace profile "${name}"?`, 'Delete Profile');
     if (!confirmed) {
         return;
     }

@@ -459,6 +459,9 @@ body {
     font-size: 13px;
     font-weight: 500;
     flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .category-count {
@@ -501,13 +504,17 @@ body {
     background: var(--border);
 }
 
+.script-item:last-child::before {
+    bottom: 50%;
+}
+
 .script-item:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
 }
 
 .script-item.active {
-    background: var(--bg-active);
+    background: linear-gradient(90deg, rgba(34, 197, 94, 0.08), transparent) !important;
     color: var(--text-primary);
 }
 
@@ -515,10 +522,12 @@ body {
     content: '';
     position: absolute;
     left: 0;
-    top: 0;
-    bottom: 0;
+    top: 6px;
+    bottom: 6px;
     width: 3px;
     background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    border-radius: 0 2px 2px 0;
 }
 
 .script-item-icon {
@@ -571,13 +580,15 @@ body {
 /* ─── Terminal Tabs ───────────────────────────────────── */
 .cli-tabs {
     display: flex;
-    align-items: center;
-    background: var(--bg-tertiary);
-    border-bottom: 1px solid var(--border);
-    padding: 0 12px;
+    align-items: flex-end;
+    background: transparent;
+    border-bottom: none;
+    padding: 0;
     gap: 4px;
-    height: 36px;
+    height: 100%;
     overflow-x: auto;
+    margin-bottom: -1px;
+    z-index: 1;
 }
 
 .cli-tabs::-webkit-scrollbar {
@@ -588,10 +599,11 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 12px;
-    height: 28px;
+    padding: 0 14px;
+    height: 32px;
     background: transparent;
     border: 1px solid transparent;
+    border-bottom: none;
     border-radius: var(--radius) var(--radius) 0 0;
     font-size: 11px;
     font-weight: 500;
@@ -599,42 +611,69 @@ body {
     cursor: pointer;
     transition: var(--transition-fast);
     white-space: nowrap;
+    position: relative;
+    user-select: none;
 }
 
 .cli-tab:hover {
-    background: var(--bg-hover);
-    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.03) !important;
+    color: var(--text-secondary) !important;
 }
 
 .cli-tab.active {
     background: var(--bg-primary);
     border-color: var(--border);
-    border-bottom-color: transparent;
-    color: var(--accent);
+    border-bottom-color: var(--bg-primary);
+    color: var(--text-primary);
 }
 
 .cli-tab-close {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border: none;
     background: transparent;
-    color: var(--text-muted);
-    border-radius: 4px;
+    color: currentColor;
+    opacity: 0.4;
+    border-radius: 3px;
     cursor: pointer;
+    transition: opacity var(--transition-fast), background var(--transition-fast);
+    margin-left: 6px;
+}
+
+.cli-tab:hover .cli-tab-close,
+.cli-tab.active .cli-tab-close {
+    opacity: 0.7;
 }
 
 .cli-tab-close:hover {
-    background: rgba(239, 68, 68, 0.1);
-    color: var(--accent-red);
+    background: rgba(255, 255, 255, 0.1) !important;
+    color: var(--text-primary) !important;
+    opacity: 1 !important;
 }
 
 .btn-add-tab {
     width: 24px;
     height: 24px;
-    margin-left: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent !important;
+    border: 1px solid transparent !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-muted) !important;
+    cursor: pointer !important;
+    transition: var(--transition-fast) !important;
+    margin-left: 8px !important;
+    align-self: center !important;
+}
+
+.btn-add-tab:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+    color: var(--text-primary) !important;
+    border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 /* ─── Terminal Search ─────────────────────────────────── */
@@ -679,9 +718,44 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 20px;
-    background: var(--bg-primary);
+    height: 40px;
+    padding: 0 16px;
+    background: var(--bg-secondary);
     border-bottom: 1px solid var(--border);
+    position: relative;
+}
+
+.cli-welcome {
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 16px;
+}
+
+.cli-welcome > div:first-child {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 6px;
+}
+
+.cli-welcome .cli-prompt {
+    color: var(--accent);
+    width: 1ch;
+    display: inline-block;
+    margin-right: 12px;
+    font-weight: 600;
+}
+
+.cli-welcome-text {
+    color: var(--text-primary);
+    font-style: normal;
+    font-weight: 600;
+}
+
+.cli-welcome-sub {
+    color: var(--text-muted);
+    margin-top: 0;
+    margin-left: calc(1ch + 12px);
 }
 
 .cli-header-left {
@@ -739,14 +813,6 @@ body {
     word-break: break-word;
 }
 
-.cli-welcome {
-    color: var(--text-muted);
-    margin-bottom: 12px;
-}
-
-.cli-welcome-text {
-    font-style: italic;
-}
 
 .cli-prompt {
     color: var(--accent);
@@ -767,7 +833,7 @@ body {
     color: var(--accent);
     font-family: var(--font-mono);
     font-weight: 600;
-    font-size: 14px;
+    font-size: var(--terminal-font-size, 13px);
 }
 
 #cli-input {
@@ -2152,48 +2218,174 @@ body.debugger-open #app-main {
     color: white;
 }
 /* ─── Analytics Dashboard ───────────────── */
-
 #analytics-modal {
     width: min(1200px, 95vw);
     max-height: 90vh;
     overflow-y: auto;
 }
 
+#analytics-content {
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
 .analytics-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
-    margin-bottom: 24px;
+    margin: 0;
 }
 
 .analytics-card {
-    padding: 20px;
-    border-radius: 12px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
+    padding: 16px 20px;
+    border-radius: var(--radius-lg);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--border-bright);
+    display: flex;
+    flex-direction: column;
+    transition: var(--transition-fast);
 }
+
+.analytics-card:hover {
+    border-color: var(--border-bright);
+    transform: translateY(-2px);
+}
+
+.analytics-card:nth-child(1) { border-top-color: var(--accent-blue); }
+.analytics-card:nth-child(2) { border-top-color: var(--accent); }
+.analytics-card:nth-child(3) { border-top-color: var(--accent-red); }
+.analytics-card:nth-child(4) { border-top-color: var(--accent-orange); }
 
 .analytics-card h3 {
-    margin-bottom: 10px;
-    font-size: 14px;
-    color: var(--text-secondary);
+    margin: 0;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    font-weight: 600;
 }
 
-.analytics-card div {
-    font-size: 28px;
-    font-weight: bold;
+.analytics-card-value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1;
+    font-family: var(--font-mono);
+    margin-top: 4px;
 }
+
+.analytics-card-value.success { color: var(--accent); }
+.analytics-card-value.failed { color: var(--accent-red); }
+.analytics-card-value.runtime { color: var(--accent-orange); }
+
+.analytics-card-icon {
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+.analytics-card-icon.total { color: var(--accent-blue); }
+.analytics-card-icon.success { color: var(--accent); }
+.analytics-card-icon.failed { color: var(--accent-red); }
+.analytics-card-icon.runtime { color: var(--accent-orange); }
 
 .analytics-section {
-    margin-top: 24px;
+    margin-top: 0;
+}
+
+.analytics-section h3 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
 }
 
 .analytics-item {
-    padding: 10px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+    border-radius: var(--radius);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    transition: var(--transition-fast);
+}
+
+.analytics-item:hover {
+    border-color: var(--border-bright);
+    background: var(--bg-hover);
+}
+
+.analytics-item-name {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+}
+
+.analytics-item-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Graceful Empty State */
+.analytics-dashboard-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 40px;
+    text-align: center;
+    color: var(--text-muted);
+}
+
+.analytics-dashboard-empty h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-top: 16px;
     margin-bottom: 8px;
-    border-radius: 8px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
+}
+
+.analytics-dashboard-empty p {
+    font-size: 12px;
+    max-width: 320px;
+    line-height: 1.5;
+}
+
+.analytics-empty-icon {
+    color: var(--text-muted);
+    opacity: 0.4;
+}
+
+/* Outline Close Button */
+#analytics-close {
+    background: transparent !important;
+    border: 1px solid var(--border) !important;
+    color: var(--text-secondary) !important;
+    padding: 6px 14px !important;
+    font-size: 12px !important;
+    border-radius: var(--radius) !important;
+    cursor: pointer !important;
+    transition: var(--transition-fast) !important;
+}
+
+#analytics-close:hover {
+    background: rgba(255, 255, 255, 0.05) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-bright) !important;
 }
 
 /* ─── Reliability Dashboard ─────────────────────────────── */
@@ -2978,3 +3170,208 @@ body.light-theme .analysis-empty h3 {
     color: #212529 !important;
 }
 /* ───────────────────────────── */
+/* ─── Issue #104 PREMIUM ENHANCEMENTS ─── */
+
+.category-section {
+    display: block !important;
+    margin-bottom: 4px;
+}
+
+.category-header {
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 20px;
+    cursor: pointer;
+    transition: var(--transition-fast);
+    user-select: none;
+    color: var(--text-secondary);
+}
+
+.tab-terminal-icon {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent);
+    opacity: 0.8;
+}
+
+/* Tab Glow / Underline */
+.cli-tab.active {
+    background: var(--bg-primary) !important;
+    border-left: 1px solid var(--border) !important;
+    border-right: 1px solid var(--border) !important;
+    border-top: 2px solid var(--accent) !important;
+    border-bottom: 1px solid var(--bg-primary) !important;
+    color: var(--text-primary) !important;
+    box-shadow: none !important;
+    height: 33px !important;
+    padding: 0 16px !important;
+    z-index: 2;
+}
+
+body.light-theme .cli-tab.active {
+    background: #ffffff !important;
+    border-left-color: #dee2e6 !important;
+    border-right-color: #dee2e6 !important;
+    border-bottom-color: #ffffff !important;
+}
+
+body.light-theme .cli-welcome-sub {
+    color: #868e96 !important;
+}
+
+/* Themed Modal Inputs */
+.modal input,
+.modal textarea,
+.modal select,
+.modal-overlay input {
+    background: var(--bg-tertiary) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-ui) !important;
+    font-size: 13px !important;
+    padding: 8px 12px !important;
+    outline: none !important;
+    transition: var(--transition-fast) !important;
+}
+
+.modal input:focus,
+.modal textarea:focus,
+.modal select:focus,
+.modal-overlay input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px var(--accent-glow) !important;
+}
+
+/* Custom Dropdown select style */
+.modal select,
+.modal-overlay select {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    -moz-appearance: none !important;
+    background-image: url("data:image/svg+xml;utf8,<svg fill='white' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>") !important;
+    background-repeat: no-repeat !important;
+    background-position: right 8px center !important;
+    background-size: 16px !important;
+    padding-right: 28px !important;
+    cursor: pointer !important;
+}
+
+body.light-theme .modal select,
+body.light-theme .modal-overlay select {
+    background-image: url("data:image/svg+xml;utf8,<svg fill='black' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>") !important;
+}
+
+/* Analytics Lists Grid styling */
+.analytics-lists-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 20px;
+    margin: 0;
+}
+.analytics-lists-grid .analytics-section {
+    margin-top: 0;
+}
+
+
+/* Collapsible Sidebar transition and collapsed classes */
+#sidebar {
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+#sidebar.collapsed {
+    width: 0 !important;
+    min-width: 0 !important;
+    border-right: none !important;
+    overflow: hidden !important;
+}
+
+#resizer-left.collapsed {
+    display: none !important;
+}
+
+/* Tab status indicators */
+.tab-spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--accent);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+
+.tab-success {
+    color: var(--accent) !important;
+    margin-left: 6px;
+    font-weight: bold;
+    vertical-align: middle;
+}
+
+.tab-failed {
+    color: var(--accent-red) !important;
+    margin-left: 6px;
+    font-weight: bold;
+    vertical-align: middle;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Terminal Font Scaling custom property */
+.cli-body {
+    font-size: var(--terminal-font-size, 13px) !important;
+}
+#cli-input {
+    font-size: var(--terminal-font-size, 13px) !important;
+}
+.cli-prompt-input {
+    font-size: var(--terminal-font-size, 13px) !important;
+}
+
+/* Analytics Progress Bars */
+.analytics-progress-bar {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 2px;
+    margin-top: 12px;
+    margin-bottom: 6px;
+    overflow: hidden;
+    width: 100%;
+}
+
+.analytics-progress-fill {
+    height: 100%;
+    width: 0%;
+    transition: width 0.4s ease-out;
+}
+
+.success-bar .analytics-progress-fill {
+    background: var(--accent, #22c55e);
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.3);
+}
+
+.failed-bar .analytics-progress-fill {
+    background: var(--accent-red, #dc3545);
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.3);
+}
+
+.neutral-bar .analytics-progress-fill {
+    background: var(--border-bright);
+}
+
+.runtime-bar .analytics-progress-fill {
+    background: var(--accent-orange);
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.3);
+}
+
+.analytics-rate-label {
+    font-size: 11px !important;
+    color: var(--text-muted);
+    font-weight: 500 !important;
+    margin-top: 2px;
+}

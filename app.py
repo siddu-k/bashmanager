@@ -2285,7 +2285,9 @@ def parse_script_metadata(filepath):
             for line in f:
                 line = line.strip()
                 if line.startswith('# name:'):
-                    metadata['name'] = line[7:].strip()
+                    name_val = line[7:].strip()
+                    if name_val:
+                        metadata['name'] = name_val
                 elif line.startswith('# desc:'):
                     metadata['desc'] = line[7:].strip()
                 elif line.startswith('# tag:'):
