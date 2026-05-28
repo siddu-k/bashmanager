@@ -1,0 +1,20 @@
+name: Blank issue
+description: Open a generic issue with a single comment box.
+title: "Issue: <description>"
+labels: []
+
+body:
+  - type: textarea
+    id: content
+    attributes:
+      label: Describe the issue
+      description: Provide any details, logs, or context.
+      placeholder: Leave a comment
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Describe the steps to reproduce the issue, if applicable.
+      placeholder: 1) ...\n2) ...\n3) ...

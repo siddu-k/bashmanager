@@ -1,8 +1,7 @@
-from importlib import resources
 import os
 import json
 import time
-import subprocess
+import subprocess  # nosec B404
 import tempfile
 import threading
 import queue
@@ -16,35 +15,43 @@ import urllib.request
 import urllib.parse
 import re
 import shutil
+import logging
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, Response
 
+# Setup logger for DevShell backend logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("devshell")
+
 from utils.validators import validate_safe_path, validate_git_branch, validate_repo_name
 
 PBKDF2_ITERATIONS = 100_000
 
-
-app = Flask(__name__, static_folder='ui', static_url_path='')
+app = Flask(__name__, static_folder="ui", static_url_path="")
 
 @app.errorhandler(ValueError)
 def handle_validation_error(e):
     return jsonify({"error": str(e)}), 400
 
-BASE_DIR = os.environ.get('DEV_SHELL_DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scripts')
-FAVORITES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'favorites.json')
-LOCKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'locks.json')
-LOG_ROOT = os.path.join(BASE_DIR, 'logs')
-EXECUTION_LOG_DIR = os.path.join(LOG_ROOT, 'executions')
-SESSION_LOG_DIR = os.path.join(LOG_ROOT, 'sessions')
-HISTORY_FILE = os.path.join(LOG_ROOT, 'history.jsonl')
-FAILED_HISTORY_FILE = os.path.join(LOG_ROOT, 'failed.jsonl')
-COMMAND_HISTORY_FILE = os.path.join(LOG_ROOT, 'command_history.json')
-WORKSPACE_DIR = os.path.join(LOG_ROOT, 'workspaces')
-WORKSPACE_STATE_FILE = os.path.join(WORKSPACE_DIR, 'workspace_state.json')
-WORKSPACE_PROFILE_DIR = os.path.join(WORKSPACE_DIR, 'profiles')
+BASE_DIR = os.environ.get(
+    "DEV_SHELL_DATA_DIR", os.path.dirname(os.path.abspath(__file__))
+)
+SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts")
+FAVORITES_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "favorites.json"
+)
+LOCKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "locks.json")
+LOG_ROOT = os.path.join(BASE_DIR, "logs")
+EXECUTION_LOG_DIR = os.path.join(LOG_ROOT, "executions")
+SESSION_LOG_DIR = os.path.join(LOG_ROOT, "sessions")
+HISTORY_FILE = os.path.join(LOG_ROOT, "history.jsonl")
+FAILED_HISTORY_FILE = os.path.join(LOG_ROOT, "failed.jsonl")
+COMMAND_HISTORY_FILE = os.path.join(LOG_ROOT, "command_history.json")
+WORKSPACE_DIR = os.path.join(LOG_ROOT, "workspaces")
+WORKSPACE_STATE_FILE = os.path.join(WORKSPACE_DIR, "workspace_state.json")
+WORKSPACE_PROFILE_DIR = os.path.join(WORKSPACE_DIR, "profiles")
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 os.makedirs(WORKSPACE_PROFILE_DIR, exist_ok=True)
 
@@ -97,8 +104,7 @@ FAILURE_TYPES = {
 }
 
 SESSIONS_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    'sessions.json'
+    os.path.dirname(os.path.abspath(__file__)), "sessions.json"
 )
 MAX_HISTORY_ENTRIES = 1000
 MAX_FAILED_HISTORY_ENTRIES = 500
@@ -113,23 +119,23 @@ active_processes_lock = threading.Lock()
 
 def validate_workspace_snapshot(data):
     if not isinstance(data, dict):
-        return False, 'Workspace snapshot must be an object'
+        return False, "Workspace snapshot must be an object"
 
-    terminals = data.get('terminals')
+    terminals = data.get("terminals")
     if terminals is not None and not isinstance(terminals, list):
-        return False, 'Invalid terminals structure'
+        return False, "Invalid terminals structure"
 
-    active_terminal = data.get('activeTerminalId')
+    active_terminal = data.get("activeTerminalId")
     if active_terminal is not None and not isinstance(active_terminal, int):
-        return False, 'Invalid active terminal'
+        return False, "Invalid active terminal"
 
-    version = data.get('version')
+    version = data.get("version")
     if version is not None and not isinstance(version, int):
-        return False, 'Invalid snapshot version'
+        return False, "Invalid snapshot version"
 
-    active_script = data.get('activeScript')
+    active_script = data.get("activeScript")
     if active_script is not None and not isinstance(active_script, str):
-        return False, 'Invalid active script reference'
+        return False, "Invalid active script reference"
 
     return True, None
 
@@ -138,18 +144,15 @@ def load_workspace_state():
     if not os.path.exists(WORKSPACE_STATE_FILE):
         return None
     try:
-        with open(WORKSPACE_STATE_FILE, 'r', encoding='utf-8') as f:
+        with open(WORKSPACE_STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        corrupted_path = WORKSPACE_STATE_FILE + '.corrupted'
+        corrupted_path = WORKSPACE_STATE_FILE + ".corrupted"
         try:
             shutil.move(WORKSPACE_STATE_FILE, corrupted_path)
-        except Exception:
+        except Exception:  # nosec B110
             pass
-        return {
-            'corrupted': True,
-            'error': str(e)
-        }
+        return {"corrupted": True, "error": str(e)}
 
 
 def save_workspace_state(data):
@@ -158,13 +161,13 @@ def save_workspace_state(data):
         return False, error
 
     payload = {
-        'version': 2,
-        'saved_at': datetime.now(timezone.utc).isoformat(),
-        'workspace': data
+        "version": 2,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "workspace": data,
     }
 
     try:
-        with open(WORKSPACE_STATE_FILE, 'w', encoding='utf-8') as f:
+        with open(WORKSPACE_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         return True, None
     except Exception as e:
@@ -172,14 +175,14 @@ def save_workspace_state(data):
 
 
 def get_workspace_profile_path(name):
-    safe_name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
-    return os.path.join(WORKSPACE_PROFILE_DIR, f'{safe_name}.json')
+    safe_name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
+    return os.path.join(WORKSPACE_PROFILE_DIR, f"{safe_name}.json")
 
 
 def list_workspace_profiles():
     profiles = []
     for file in os.listdir(WORKSPACE_PROFILE_DIR):
-        if not file.endswith('.json'):
+        if not file.endswith(".json"):
             continue
         profiles.append(file[:-5])
     return sorted(profiles)
@@ -196,19 +199,19 @@ def _utc_now():
 
 
 def _iso_now():
-    return _utc_now().isoformat(timespec='seconds')
+    return _utc_now().isoformat(timespec="seconds")
 
 
-def _slugify(value, fallback='execution'):
-    safe = re.sub(r'[^A-Za-z0-9._-]+', '-', str(value or '')).strip('-._')
+def _slugify(value, fallback="execution"):
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "")).strip("-._")
     return safe[:48] or fallback
 
 
 def _append_jsonl(file_path, record):
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    with open(file_path, 'a', encoding='utf-8', newline='\n') as f:
+    with open(file_path, "a", encoding="utf-8", newline="\n") as f:
         json.dump(record, f, ensure_ascii=False)
-        f.write('\n')
+        f.write("\n")
 
 
 def _read_jsonl(file_path, max_entries=None):
@@ -345,11 +348,11 @@ def _index_records_by_script(records):
 def _trim_jsonl(file_path, max_entries):
     if not os.path.exists(file_path):
         return
-    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+    with open(file_path, "r", encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
     if len(lines) <= max_entries:
         return
-    with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
+    with open(file_path, "w", encoding="utf-8", newline="\n") as f:
         f.writelines(lines[-max_entries:])
 
 
@@ -385,172 +388,177 @@ def _cleanup_old_execution_logs():
 
 def _format_duration(seconds):
     if seconds < 60:
-        return f'{seconds:.2f}s'
+        return f"{seconds:.2f}s"
     minutes = int(seconds // 60)
     remaining = seconds % 60
-    return f'{minutes}m {remaining:.1f}s'
+    return f"{minutes}m {remaining:.1f}s"
 
 
-def _start_execution_record(kind, display_name, command_text, shell_cmd='', cwd=''):
+def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=""):
     _ensure_log_dirs()
     started_at = _utc_now()
     monotonic_start = time.perf_counter()
     execution_id = uuid.uuid4().hex[:8]
-    timestamp_token = started_at.strftime('%Y%m%dT%H%M%SZ')
-    log_name = f'{timestamp_token}_{kind}_{_slugify(display_name)}_{execution_id}.log'
+    timestamp_token = started_at.strftime("%Y%m%dT%H%M%SZ")
+    log_name = f"{timestamp_token}_{kind}_{_slugify(display_name)}_{execution_id}.log"
     log_path = os.path.join(EXECUTION_LOG_DIR, log_name)
-    log_handle = open(log_path, 'w', encoding='utf-8', newline='\n')
+    log_handle = open(log_path, "w", encoding="utf-8", newline="\n")
 
     record = {
-        'id': execution_id,
-        'kind': kind,
-        'display_name': display_name,
-        'command': command_text,
-        'shell': shell_cmd,
-        'cwd': cwd,
-        'started_at': started_at.isoformat(),
-        'status': 'running',
-        'exit_code': None,
-        'duration_seconds': None,
-        'log_file': log_name,
-        'log_path': log_path,
-        'output_excerpt': '',
-        'success': False,
-        'session_file': f'{execution_id}.json',
+        "id": execution_id,
+        "kind": kind,
+        "display_name": display_name,
+        "command": command_text,
+        "shell": shell_cmd,
+        "cwd": cwd,
+        "started_at": started_at.isoformat(),
+        "status": "running",
+        "exit_code": None,
+        "duration_seconds": None,
+        "log_file": log_name,
+        "log_path": log_path,
+        "output_excerpt": "",
+        "success": False,
+        "session_file": f"{execution_id}.json",
     }
 
     log_handle.write(f'[{record["started_at"]}] execution started\n')
-    log_handle.write(f'kind: {kind}\n')
-    log_handle.write(f'id: {execution_id}\n')
-    log_handle.write(f'display: {display_name}\n')
-    log_handle.write(f'command: {command_text}\n')
+    log_handle.write(f"kind: {kind}\n")
+    log_handle.write(f"id: {execution_id}\n")
+    log_handle.write(f"display: {display_name}\n")
+    log_handle.write(f"command: {command_text}\n")
     if shell_cmd:
-        log_handle.write(f'shell: {shell_cmd}\n')
+        log_handle.write(f"shell: {shell_cmd}\n")
     if cwd:
-        log_handle.write(f'cwd: {cwd}\n')
-    log_handle.write('\n')
+        log_handle.write(f"cwd: {cwd}\n")
+    log_handle.write("\n")
     log_handle.flush()
 
     session_data = {
-    'metadata': {
-        'id': execution_id,
-        'kind': kind,
-        'display_name': display_name,
-        'command': command_text,
-        'shell': shell_cmd,
-        'cwd': cwd,
-        'started_at': started_at.isoformat(),
-    },
-    'events': []
+        "metadata": {
+            "id": execution_id,
+            "kind": kind,
+            "display_name": display_name,
+            "command": command_text,
+            "shell": shell_cmd,
+            "cwd": cwd,
+            "started_at": started_at.isoformat(),
+        },
+        "events": [],
     }
 
     return {
-    'record': record,
-    'handle': log_handle,
-    'excerpt_lines': [],
-    'excerpt_size': 0,
-    'session_data': session_data,
-    'monotonic_start': monotonic_start,
+        "record": record,
+        "handle": log_handle,
+        "excerpt_lines": [],
+        "excerpt_size": 0,
+        "session_data": session_data,
+        "monotonic_start": monotonic_start,
     }
 
 
 def _append_execution_line(execution, stream_type, content):
     if execution is None:
         return
-    line = content.rstrip('\n')
-    if not line and stream_type != 'system':
+    line = content.rstrip("\n")
+    if not line and stream_type != "system":
         return
     timestamp = _iso_now()
-    elapsed = round(
-    time.perf_counter() - execution['monotonic_start'],
-    4
+    elapsed = round(time.perf_counter() - execution["monotonic_start"], 4)
+    execution["session_data"]["events"].append(
+        {"timestamp": elapsed, "stream": stream_type, "content": line}
     )
-    execution['session_data']['events'].append({
-    'timestamp': elapsed,
-    'stream': stream_type,
-    'content': line
-    })
-    execution['handle'].write(f'[{timestamp}] {stream_type}: {line}\n')
-    execution['handle'].flush()
-    excerpt_line = f'{stream_type}: {line}'
-    execution['excerpt_lines'].append(excerpt_line)
-    execution['excerpt_size'] += len(excerpt_line) + 1
-    while execution['excerpt_lines'] and execution['excerpt_size'] > MAX_HISTORY_EXCERPT_CHARS:
-        removed = execution['excerpt_lines'].pop(0)
-        execution['excerpt_size'] -= len(removed) + 1
+    execution["handle"].write(f"[{timestamp}] {stream_type}: {line}\n")
+    execution["handle"].flush()
+    excerpt_line = f"{stream_type}: {line}"
+    execution["excerpt_lines"].append(excerpt_line)
+    execution["excerpt_size"] += len(excerpt_line) + 1
+    while (
+        execution["excerpt_lines"]
+        and execution["excerpt_size"] > MAX_HISTORY_EXCERPT_CHARS
+    ):
+        removed = execution["excerpt_lines"].pop(0)
+        execution["excerpt_size"] -= len(removed) + 1
 
 
-def _finalize_execution(execution, success, exit_code, duration_seconds, resources=None, error_message=''):
+def _finalize_execution(
+    execution,
+    success,
+    exit_code,
+    duration_seconds,
+    resource_usage=None,
+    error_message="",
+):
     if execution is None:
         return None
 
-    record = execution['record']
-    record['status'] = 'success' if success else 'failed'
-    record['success'] = bool(success)
-    record['exit_code'] = int(exit_code) if exit_code is not None else None
-    record['duration_seconds'] = round(duration_seconds, 3) if duration_seconds is not None else None
-    record['duration'] = _format_duration(duration_seconds or 0)
-    record['finished_at'] = _iso_now()
-    record['output_excerpt'] = '\n'.join(execution['excerpt_lines'])[-MAX_HISTORY_EXCERPT_CHARS:]
-    if resources:
-        record['resources'] = resources
-    if error_message:
-        record['error'] = error_message
-
-    execution['handle'].write('\n')
-    execution['handle'].write(f'[{record["finished_at"]}] status: {record["status"]}\n')
-    if record['exit_code'] is not None:
-        execution['handle'].write(f'exit_code: {record["exit_code"]}\n')
-    if record['duration_seconds'] is not None:
-        execution['handle'].write(f'duration_seconds: {record["duration_seconds"]}\n')
-    if error_message:
-        execution['handle'].write(f'error: {error_message}\n')
-    if resources:
-        execution['handle'].write(f'resources: {json.dumps(resources, ensure_ascii=False)}\n')
-    session_path = os.path.join(
-    SESSION_LOG_DIR,
-    record['session_file']
+    record = execution["record"]
+    record["status"] = "success" if success else "failed"
+    record["success"] = bool(success)
+    record["exit_code"] = int(exit_code) if exit_code is not None else None
+    record["duration_seconds"] = (
+        round(duration_seconds, 3) if duration_seconds is not None else None
     )
-    execution['session_data']['metadata'].update({
-    'finished_at': record['finished_at'],
-    'duration_seconds': record['duration_seconds'],
-    'exit_code': record['exit_code'],
-    'status': record['status'],
-    'success': record['success'],
-    })
-    if resources:
-        execution['session_data']['metadata']['resources'] = resources
-    with open(session_path, 'w', encoding='utf-8') as sf:
-        json.dump(
-            execution['session_data'],
-            sf,
-            indent=2,
-            ensure_ascii=False
+    record["duration"] = _format_duration(duration_seconds or 0)
+    record["finished_at"] = _iso_now()
+    record["output_excerpt"] = "\n".join(execution["excerpt_lines"])[
+        -MAX_HISTORY_EXCERPT_CHARS:
+    ]
+    if resource_usage:
+        record["resources"] = resource_usage
+    if error_message:
+        record["error"] = error_message
+
+    execution["handle"].write("\n")
+    execution["handle"].write(f'[{record["finished_at"]}] status: {record["status"]}\n')
+    if record["exit_code"] is not None:
+        execution["handle"].write(f'exit_code: {record["exit_code"]}\n')
+    if record["duration_seconds"] is not None:
+        execution["handle"].write(f'duration_seconds: {record["duration_seconds"]}\n')
+    if error_message:
+        execution["handle"].write(f"error: {error_message}\n")
+    if resource_usage:
+        execution["handle"].write(
+            f"resources: {json.dumps(resource_usage, ensure_ascii=False)}\n"
         )
-    execution['handle'].close()
+    session_path = os.path.join(SESSION_LOG_DIR, record["session_file"])
+    execution["session_data"]["metadata"].update(
+        {
+            "finished_at": record["finished_at"],
+            "duration_seconds": record["duration_seconds"],
+            "exit_code": record["exit_code"],
+            "status": record["status"],
+            "success": record["success"],
+        }
+    )
+    if resource_usage:
+        execution["session_data"]["metadata"]["resources"] = resource_usage
+    with open(session_path, "w", encoding="utf-8") as sf:
+        json.dump(execution["session_data"], sf, indent=2, ensure_ascii=False)
+    execution["handle"].close()
 
     history_record = {
-        'id': record['id'],
-        'kind': record['kind'],
-        'session_file': record['session_file'],
-        'display_name': record['display_name'],
-        'command': record['command'],
-        'shell': record['shell'],
-        'cwd': record['cwd'],
-        'started_at': record['started_at'],
-        'finished_at': record['finished_at'],
-        'status': record['status'],
-        'success': record['success'],
-        'exit_code': record['exit_code'],
-        'duration_seconds': record['duration_seconds'],
-        'duration': record['duration'],
-        'log_file': record['log_file'],
-        'output_excerpt': record['output_excerpt'],
+        "id": record["id"],
+        "kind": record["kind"],
+        "session_file": record["session_file"],
+        "display_name": record["display_name"],
+        "command": record["command"],
+        "shell": record["shell"],
+        "cwd": record["cwd"],
+        "started_at": record["started_at"],
+        "finished_at": record["finished_at"],
+        "status": record["status"],
+        "success": record["success"],
+        "exit_code": record["exit_code"],
+        "duration_seconds": record["duration_seconds"],
+        "duration": record["duration"],
+        "log_file": record["log_file"],
+        "output_excerpt": record["output_excerpt"],
     }
     if error_message:
-        history_record['error'] = error_message
-    if resources:
-        history_record['resources'] = resources
+        history_record["error"] = error_message
+    if resource_usage:
+        history_record["resources"] = resource_usage
     
     # Add failure classification for failed executions
     if not success:
@@ -580,7 +588,7 @@ def load_command_history():
         return []
 
     try:
-        with open(COMMAND_HISTORY_FILE, 'r', encoding='utf-8') as f:
+        with open(COMMAND_HISTORY_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
 
     except Exception:
@@ -601,31 +609,33 @@ def save_command_history(command):
     # Keep latest 200
     history = history[:200]
 
-    with open(COMMAND_HISTORY_FILE, 'w', encoding='utf-8') as f:
+    with open(COMMAND_HISTORY_FILE, "w", encoding="utf-8") as f:
         json.dump(history, f, indent=2)
 
 
-def _load_history_entries(query='', status='all', kind='all', limit=200):
+def _load_history_entries(query="", status="all", kind="all", limit=200):
     entries = _read_jsonl(HISTORY_FILE)
-    query = (query or '').strip().lower()
-    status = (status or 'all').strip().lower()
-    kind = (kind or 'all').strip().lower()
+    query = (query or "").strip().lower()
+    status = (status or "all").strip().lower()
+    kind = (kind or "all").strip().lower()
 
     def matches(entry):
-        if status != 'all' and entry.get('status', '').lower() != status:
+        if status != "all" and entry.get("status", "").lower() != status:
             return False
-        if kind != 'all' and entry.get('kind', '').lower() != kind:
+        if kind != "all" and entry.get("kind", "").lower() != kind:
             return False
         if not query:
             return True
-        haystack = ' '.join([
-            str(entry.get('command', '')),
-            str(entry.get('display_name', '')),
-            str(entry.get('output_excerpt', '')),
-            str(entry.get('status', '')),
-            str(entry.get('kind', '')),
-            str(entry.get('exit_code', '')),
-        ]).lower()
+        haystack = " ".join(
+            [
+                str(entry.get("command", "")),
+                str(entry.get("display_name", "")),
+                str(entry.get("output_excerpt", "")),
+                str(entry.get("status", "")),
+                str(entry.get("kind", "")),
+                str(entry.get("exit_code", "")),
+            ]
+        ).lower()
         return query in haystack
 
     filtered = [entry for entry in reversed(entries) if matches(entry)]
@@ -635,15 +645,15 @@ def _load_history_entries(query='', status='all', kind='all', limit=200):
 def _history_summary():
     entries = _read_jsonl(HISTORY_FILE)
     total = len(entries)
-    failed = sum(1 for entry in entries if entry.get('status') == 'failed')
-    scripts = sum(1 for entry in entries if entry.get('kind') == 'script')
-    commands = sum(1 for entry in entries if entry.get('kind') == 'command')
+    failed = sum(1 for entry in entries if entry.get("status") == "failed")
+    scripts = sum(1 for entry in entries if entry.get("kind") == "script")
+    commands = sum(1 for entry in entries if entry.get("kind") == "command")
     return {
-        'total': total,
-        'failed': failed,
-        'successful': total - failed,
-        'scripts': scripts,
-        'commands': commands,
+        "total": total,
+        "failed": failed,
+        "successful": total - failed,
+        "scripts": scripts,
+        "commands": commands,
     }
 
 
@@ -2145,37 +2155,37 @@ _cleanup_old_execution_logs()
 
 def load_favorites():
     if os.path.exists(FAVORITES_FILE):
-        with open(FAVORITES_FILE, 'r') as f:
+        with open(FAVORITES_FILE, "r") as f:
             return json.load(f)
     return []
 
 
 def save_favorites(favs):
-    with open(FAVORITES_FILE, 'w') as f:
+    with open(FAVORITES_FILE, "w") as f:
         json.dump(favs, f)
 
 
 def load_locks():
     if os.path.exists(LOCKS_FILE):
-        with open(LOCKS_FILE, 'r') as f:
+        with open(LOCKS_FILE, "r") as f:
             return json.load(f)
     return {}
 
 
 def save_locks(locks):
-    with open(LOCKS_FILE, 'w') as f:
+    with open(LOCKS_FILE, "w") as f:
         json.dump(locks, f)
 
 
 def load_sessions():
     if os.path.exists(SESSIONS_FILE):
-        with open(SESSIONS_FILE, 'r', encoding='utf-8') as f:
+        with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 
 def save_sessions(sessions):
-    with open(SESSIONS_FILE, 'w', encoding='utf-8') as f:
+    with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
         json.dump(sessions, f, indent=2)
 
 
@@ -2260,7 +2270,7 @@ def check_lock(rel_path: str, provided_pass: str) -> bool:
                     new_hash = generate_password_hash(provided_pass)
                     locks[rel_path] = new_hash
                     save_locks(locks)
-                except Exception:
+                except Exception:  # nosec B110
                     pass
                 return True
             return False
@@ -2275,13 +2285,13 @@ def check_lock(rel_path: str, provided_pass: str) -> bool:
 def parse_script_metadata(filepath):
     """Parse metadata from script comment headers."""
     metadata = {
-        'name': os.path.basename(filepath).replace('.sh', '').replace('_', ' ').title(),
-        'desc': '',
-        'tag': '',
-        'path': filepath
+        "name": os.path.basename(filepath).replace(".sh", "").replace("_", " ").title(),
+        "desc": "",
+        "tag": "",
+        "path": filepath,
     }
     try:
-        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if line.startswith('# name:'):
@@ -2294,7 +2304,7 @@ def parse_script_metadata(filepath):
                     metadata['tag'] = line[6:].strip()
                 elif not line.startswith('#') and line:
                     break
-    except Exception:
+    except Exception:  # nosec B110
         pass
     return metadata
 
@@ -2314,78 +2324,113 @@ def get_all_scripts():
         if os.path.isdir(cat_path):
             scripts = []
             for script_file in sorted(os.listdir(cat_path)):
-                if script_file.endswith('.sh'):
+                if script_file.endswith(".sh"):
                     full_path = os.path.join(cat_path, script_file)
                     rel_path = f"{category}/{script_file}"
                     meta = parse_script_metadata(full_path)
-                    meta['file'] = script_file
-                    meta['category'] = category
-                    meta['relative_path'] = rel_path
-                    meta['favorite'] = rel_path in favorites
-                    meta['locked'] = rel_path in locks
+                    meta["file"] = script_file
+                    # Ensure a display name exists; fall back to filename when metadata is missing
+                    if not meta.get("name"):
+                        meta["name"] = script_file
+                    meta["category"] = category
+                    meta["relative_path"] = rel_path
+                    meta["favorite"] = rel_path in favorites
+                    meta["locked"] = rel_path in locks
                     scripts.append(meta)
             if scripts:
                 categories[category] = scripts
 
     return categories
 
+# ─── Security Enhancements ──────────────────────────────────────────
+
+@app.before_request
+def enforce_security():
+    from flask import abort
+    from urllib.parse import urlparse
+
+    # 1. Host Validation (prevents DNS Rebinding)
+    host_only = request.host.split(':')[0]
+    if host_only not in ('127.0.0.1', 'localhost'):
+        abort(403)
+
+    # 2. Origin/Referer Validation (prevents CSRF)
+    if request.method in ['POST', 'PUT', 'DELETE', 'PATCH']:
+        origin = request.headers.get('Origin')
+        referer = request.headers.get('Referer')
+        
+        def is_valid_local(url):
+            try:
+                parsed = urlparse(url)
+                return parsed.hostname in ('127.0.0.1', 'localhost')
+            except Exception:
+                return False
+
+        if origin:
+            if not is_valid_local(origin):
+                abort(403)
+        elif referer:
+            if not is_valid_local(referer):
+                abort(403)
+        else:
+            # Reject if neither is present and request is from a browser
+            user_agent = request.headers.get('User-Agent', '')
+            if any(b in user_agent for b in ['Mozilla', 'Chrome', 'Safari', 'Edge']):
+                abort(403)
 
 # ─── Routes ───────────────────────────────────────────────────────
 
-@app.route('/')
+
+@app.route("/")
 def index():
-    return send_from_directory('ui', 'index.html')
+    return send_from_directory("ui", "index.html")
 
 
-@app.route('/api/scripts')
+@app.route("/api/scripts")
 def list_scripts():
     return jsonify(get_all_scripts())
 
 
-@app.route('/api/history')
+@app.route("/api/history")
 def get_history():
-    query = request.args.get('q', '')
-    status = request.args.get('status', 'all')
-    kind = request.args.get('kind', 'all')
-    limit = request.args.get('limit', 200, type=int)
+    query = request.args.get("q", "")
+    status = request.args.get("status", "all")
+    kind = request.args.get("kind", "all")
+    limit = request.args.get("limit", 200, type=int)
     limit = max(1, min(limit or 200, 500))
 
     entries = _load_history_entries(query=query, status=status, kind=kind, limit=limit)
-    return jsonify({
-        'entries': entries,
-        'summary': _history_summary(),
-        'query': {
-            'q': query,
-            'status': status,
-            'kind': kind,
-            'limit': limit,
+    return jsonify(
+        {
+            "entries": entries,
+            "summary": _history_summary(),
+            "query": {
+                "q": query,
+                "status": status,
+                "kind": kind,
+                "limit": limit,
+            },
         }
-    })
+    )
 
 
-@app.route('/api/command_history')
+@app.route("/api/command_history")
 def get_command_history():
-    return jsonify({
-        'success': True,
-        'history': load_command_history()
-    })
+    return jsonify({"success": True, "history": load_command_history()})
 
-@app.route('/api/command_history/clear', methods=['POST'])
+
+@app.route("/api/command_history/clear", methods=["POST"])
 def clear_command_history():
     try:
         # Overwrite the history JSON file with an empty array
-        with open(COMMAND_HISTORY_FILE, 'w', encoding='utf-8') as f:
+        with open(COMMAND_HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump([], f, indent=2)
-            
-        return jsonify({
-            'success': True,
-            'message': 'Command history cleared successfully'
-        })
+
+        return jsonify(
+            {"success": True, "message": "Command history cleared successfully"}
+        )
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route('/api/history/clear', methods=['POST'])
@@ -2406,110 +2451,99 @@ def clear_history():
         }), 500
 
 
-@app.route('/api/history/analytics')
+@app.route("/api/history/analytics")
 def history_analytics():
     entries = _load_history_entries(limit=1000)
 
     total = len(entries)
 
-    successful = sum(
-        1 for e in entries if e.get('success')
-    )
+    successful = sum(1 for e in entries if e.get("success"))
 
     failed = total - successful
 
-    avg_duration = round(
-        sum(
-            e.get('duration_seconds', 0)
-            for e in entries
-        ) / total,
-        2
-    ) if total else 0
+    avg_duration = (
+        round(sum(e.get("duration_seconds", 0) for e in entries) / total, 2)
+        if total
+        else 0
+    )
 
     script_counts = {}
 
     for entry in entries:
-        name = entry.get('display_name', 'Unknown')
-        script_counts[name] = (
-            script_counts.get(name, 0) + 1
-        )
+        name = entry.get("display_name", "Unknown")
+        script_counts[name] = script_counts.get(name, 0) + 1
 
-    top_scripts = sorted(
-        script_counts.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )[:5]
+    top_scripts = sorted(script_counts.items(), key=lambda x: x[1], reverse=True)[:5]
 
-    slowest = sorted(
-        entries,
-        key=lambda e: e.get('duration_seconds', 0),
-        reverse=True
-    )[:5]
+    slowest = sorted(entries, key=lambda e: e.get("duration_seconds", 0), reverse=True)[
+        :5
+    ]
 
-    recent_failures = [
-        e for e in entries
-        if not e.get('success')
-    ][:5]
+    recent_failures = [e for e in entries if not e.get("success")][:5]
 
-    return jsonify({
-        'success': True,
-        'summary': {
-            'total': total,
-            'successful': successful,
-            'failed': failed,
-            'avg_duration': avg_duration
-        },
-        'top_scripts': top_scripts,
-        'slowest': slowest,
-        'recent_failures': recent_failures
-    })
+    return jsonify(
+        {
+            "success": True,
+            "summary": {
+                "total": total,
+                "successful": successful,
+                "failed": failed,
+                "avg_duration": avg_duration,
+            },
+            "top_scripts": top_scripts,
+            "slowest": slowest,
+            "recent_failures": recent_failures,
+        }
+    )
 
 
-@app.route('/api/history/export')
+@app.route("/api/history/export")
 def export_history():
-    query = request.args.get('q', '')
-    status = request.args.get('status', 'all')
-    kind = request.args.get('kind', 'all')
-    export_format = request.args.get('format', 'log').lower()
+    query = request.args.get("q", "")
+    status = request.args.get("status", "all")
+    kind = request.args.get("kind", "all")
+    export_format = request.args.get("format", "log").lower()
     entries = _load_history_entries(query=query, status=status, kind=kind, limit=500)
 
     lines = [
-        'DevShell Execution History Export',
-        f'Generated: {_iso_now()}',
+        "DevShell Execution History Export",
+        f"Generated: {_iso_now()}",
         f'Filter: q={query or "*"} status={status} kind={kind}',
-        ''
+        "",
     ]
 
     if not entries:
-        lines.append('No matching history entries found.')
+        lines.append("No matching history entries found.")
     else:
         for entry in entries:
-            lines.extend([
-                f'[{entry.get("started_at", "")}] {entry.get("status", "unknown").upper()} {entry.get("kind", "execution").upper()} #{entry.get("id", "")}',
-                f'Command: {entry.get("command", "")}',
-                f'Display: {entry.get("display_name", "")}',
-                f'Exit Code: {entry.get("exit_code", "")}',
-                f'Duration: {entry.get("duration", "")}',
-                f'Log: {entry.get("log_file", "")}',
-            ])
-            excerpt = entry.get('output_excerpt', '').strip()
+            lines.extend(
+                [
+                    f'[{entry.get("started_at", "")}] {entry.get("status", "unknown").upper()} {entry.get("kind", "execution").upper()} #{entry.get("id", "")}',
+                    f'Command: {entry.get("command", "")}',
+                    f'Display: {entry.get("display_name", "")}',
+                    f'Exit Code: {entry.get("exit_code", "")}',
+                    f'Duration: {entry.get("duration", "")}',
+                    f'Log: {entry.get("log_file", "")}',
+                ]
+            )
+            excerpt = entry.get("output_excerpt", "").strip()
             if excerpt:
-                lines.append('Output:')
-                lines.extend(f'  {line}' for line in excerpt.splitlines())
-            error = entry.get('error', '').strip()
+                lines.append("Output:")
+                lines.extend(f"  {line}" for line in excerpt.splitlines())
+            error = entry.get("error", "").strip()
             if error:
-                lines.append(f'Error: {error}')
-            lines.append('')
+                lines.append(f"Error: {error}")
+            lines.append("")
 
-    export_text = '\n'.join(lines).rstrip() + '\n'
+    export_text = "\n".join(lines).rstrip() + "\n"
     filename = f'devshell-history-{_slugify(status + "-" + kind)}.{"txt" if export_format == "txt" else "log"}'
     return Response(
         export_text,
-        mimetype='text/plain; charset=utf-8',
+        mimetype="text/plain; charset=utf-8",
         headers={
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Cache-Control': 'no-store',
-        }
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -2672,23 +2706,23 @@ def get_execution_log(filename):
     safe_name = os.path.basename(filename)
     full_path = os.path.join(EXECUTION_LOG_DIR, safe_name)
     if not os.path.exists(full_path):
-        return jsonify({'error': 'Log not found'}), 404
-    return send_from_directory(EXECUTION_LOG_DIR, safe_name, mimetype='text/plain', as_attachment=False)
+        return jsonify({"error": "Log not found"}), 404
+    return send_from_directory(
+        EXECUTION_LOG_DIR, safe_name, mimetype="text/plain", as_attachment=False
+    )
 
-@app.route('/api/history/session/<session_id>')
+
+@app.route("/api/history/session/<session_id>")
 def get_session(session_id):
     safe_name = os.path.basename(session_id)
 
-    if not safe_name.endswith('.json'):
-        safe_name += '.json'
+    if not safe_name.endswith(".json"):
+        safe_name += ".json"
 
-    session_path = os.path.join(
-        SESSION_LOG_DIR,
-        safe_name
-    )
+    session_path = os.path.join(SESSION_LOG_DIR, safe_name)
 
     if not os.path.exists(session_path):
-        return jsonify({'error': 'Session not found'}), 404
+        return jsonify({"error": "Session not found"}), 404
 
     try:
         with open(session_path, 'r', encoding='utf-8') as f:
@@ -2703,7 +2737,7 @@ def get_session(session_id):
     return jsonify(data)
 
 
-@app.route('/api/workspace', methods=['GET'])
+@app.route("/api/workspace", methods=["GET"])
 def get_workspace_state():
     data = load_workspace_state()
     return jsonify({
@@ -2713,105 +2747,99 @@ def get_workspace_state():
     })
 
 
-@app.route('/api/workspace', methods=['POST'])
+@app.route("/api/workspace", methods=["POST"])
 def persist_workspace_state():
     data = request.json or {}
     success, error = save_workspace_state(data)
-    return jsonify({
-        'success': success,
-        'error': error
-    })
+    return jsonify({"success": success, "error": error})
 
 
-@app.route('/api/workspace/profile', methods=['POST'])
+@app.route("/api/workspace/profile", methods=["POST"])
 def save_workspace_profile():
     data = request.json or {}
-    name = data.get('name', '').strip()
-    workspace = data.get('workspace')
+    name = data.get("name", "").strip()
+    workspace = data.get("workspace")
 
     if not name:
-        return jsonify({'success': False, 'error': 'Profile name required'}), 400
+        return jsonify({"success": False, "error": "Profile name required"}), 400
 
     valid, error = validate_workspace_snapshot(workspace)
     if not valid:
-        return jsonify({'success': False, 'error': error}), 400
+        return jsonify({"success": False, "error": error}), 400
 
     profile_path = get_workspace_profile_path(name)
     payload = {
-        'version': 2,
-        'saved_at': datetime.now(timezone.utc).isoformat(),
-        'profile_name': name,
-        'workspace': workspace
+        "version": 2,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "profile_name": name,
+        "workspace": workspace,
     }
 
     try:
-        with open(profile_path, 'w', encoding='utf-8') as f:
+        with open(profile_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        return jsonify({'success': True})
+        return jsonify({"success": True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/workspace/profiles', methods=['GET'])
+@app.route("/api/workspace/profiles", methods=["GET"])
 def get_workspace_profiles():
-    return jsonify({
-        'success': True,
-        'profiles': list_workspace_profiles()
-    })
+    return jsonify({"success": True, "profiles": list_workspace_profiles()})
 
 
-@app.route('/api/workspace/profile/<name>', methods=['GET'])
+@app.route("/api/workspace/profile/<name>", methods=["GET"])
 def load_workspace_profile(name):
     profile_path = get_workspace_profile_path(name)
     if not os.path.exists(profile_path):
-        return jsonify({'success': False, 'error': 'Profile not found'}), 404
+        return jsonify({"success": False, "error": "Profile not found"}), 404
 
     try:
-        with open(profile_path, 'r', encoding='utf-8') as f:
+        with open(profile_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return jsonify({'success': True, 'profile': data})
+        return jsonify({"success": True, "profile": data})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/workspace/profile/<name>', methods=['DELETE'])
+@app.route("/api/workspace/profile/<name>", methods=["DELETE"])
 def delete_workspace_profile(name):
     profile_path = get_workspace_profile_path(name)
     if not os.path.exists(profile_path):
-        return jsonify({'success': False, 'error': 'Profile not found'}), 404
+        return jsonify({"success": False, "error": "Profile not found"}), 404
 
     try:
         os.remove(profile_path)
-        return jsonify({'success': True})
+        return jsonify({"success": True})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/scripts/content', methods=['POST'])
+@app.route("/api/scripts/content", methods=["POST"])
 def get_script_content():
     data = request.json or {}
-    rel_path = data.get('path', '')
-    password = data.get('password', '')
-    
+    rel_path = data.get("path", "")
+    password = data.get("password", "")
+
     if not check_lock(rel_path, password):
         return jsonify({'error': 'Locked', 'locked': True}), 401
         
     full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
 
     if not os.path.exists(full_path):
-        return jsonify({'error': 'Script not found'}), 404
+        return jsonify({"error": "Script not found"}), 404
 
-    with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+    with open(full_path, "r", encoding="utf-8", errors="replace") as f:
         content = f.read()
 
-    return jsonify({'content': content, 'path': rel_path})
+    return jsonify({"content": content, "path": rel_path})
 
 
-def _track_metrics(proc, result):
+def _track_metrics(proc, result, stop_event=None):
     """
     Background telemetry thread to track execution resource utilization.
-    Traverses the process hierarchy recursively to sum parent and descendant 
-    resource metrics (CPU % and RSS memory). Reuses Process objects to ensure 
+    Traverses the process hierarchy recursively to sum parent and descendant
+    resource metrics (CPU % and RSS memory). Reuses Process objects to ensure
     cpu_percent() has consistent deltas.
     """
     max_mem_mb = 0.0
@@ -2826,6 +2854,8 @@ def _track_metrics(proc, result):
         tracked_children = {}
 
         while proc.poll() is None:
+            if stop_event and stop_event.is_set():
+                break
             time.sleep(0.1)
             sample_cpu = 0.0
             sample_mem = 0.0
@@ -2871,16 +2901,16 @@ def _track_metrics(proc, result):
     except (psutil.NoSuchProcess, psutil.AccessDenied, Exception):
         pass
 
-    result['cpu'] = round(total_cpu / samples, 1) if samples > 0 else 0.0
-    result['mem'] = round(max_mem_mb, 1)
+    result["cpu"] = round(total_cpu / samples, 1) if samples > 0 else 0.0
+    result["mem"] = round(max_mem_mb, 1)
 
 
 def _escape_bash_echo(text):
     # Escape backslashes first, then other bash special characters in double quotes
-    escaped = text.replace('\\', '\\\\')
+    escaped = text.replace("\\", "\\\\")
     escaped = escaped.replace('"', '\\"')
-    escaped = escaped.replace('$', '\\$')
-    escaped = escaped.replace('`', '\\`')
+    escaped = escaped.replace("$", "\\$")
+    escaped = escaped.replace("`", "\\`")
     return escaped
 
 
@@ -2888,107 +2918,308 @@ def instrument_script(content):
     lines = content.splitlines()
     instrumented_lines = []
     steps = []
-    
+
     # First pass: find all executable steps
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith('#'):
+        if stripped.startswith("#"):
             continue
         steps.append(stripped)
-        
+
     total_steps = len(steps)
-    
+
     # Second pass: inject progress calls
     step_idx = 0
     for line in lines:
         stripped = line.strip()
-        
+
         is_step = False
-        if stripped and not stripped.startswith('#'):
+        if stripped and not stripped.startswith("#"):
             is_step = True
-                
+
         if is_step:
             step_idx += 1
             # Clean command display for security and readability
-            cmd_display = stripped.split('#')[0].strip()
+            cmd_display = stripped.split("#")[0].strip()
             cmd_escaped = _escape_bash_echo(cmd_display)
-            instrumented_lines.append(f'echo "::progress::{step_idx}::{total_steps}::{cmd_escaped}"')
-            
+            instrumented_lines.append(
+                f'echo "::progress::{step_idx}::{total_steps}::{cmd_escaped}"'
+            )
+
         instrumented_lines.append(line)
-        
-    return '\n'.join(instrumented_lines), steps
+
+    return "\n".join(instrumented_lines), steps
+
+
 def _terminate_process_tree(proc, timeout=3):
+    if proc is None:
+        return
     if proc.poll() is not None:
         return
 
+    pid = proc.pid
     try:
-        parent = psutil.Process(proc.pid)
-        processes = [parent] + parent.children(recursive=True)
+        parent = psutil.Process(pid)
+        try:
+            children = parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
+            children = []
+        processes = [parent] + children
+
+        # Terminate gracefully
         for process in processes:
             try:
-                process.terminate()
-            except psutil.NoSuchProcess:
+                if process.is_running():
+                    process.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
                 pass
 
-        _, alive = psutil.wait_procs(processes, timeout=timeout)
+        # Wait for processes to exit
+        try:
+            gone, alive = psutil.wait_procs(processes, timeout=timeout)
+        except Exception:
+            alive = []
+            for p in processes:
+                try:
+                    if p.is_running():
+                        alive.append(p)
+                except Exception:  # nosec B110
+                    pass
+
+        # Kill remaining processes
         for process in alive:
             try:
-                process.kill()
-            except psutil.NoSuchProcess:
+                if process.is_running():
+                    process.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied, ProcessLookupError):
                 pass
 
+        # Wait again after kill
         if alive:
-            psutil.wait_procs(alive, timeout=2)
-    except psutil.NoSuchProcess:
+            try:
+                psutil.wait_procs(alive, timeout=2)
+            except Exception:  # nosec B110
+                pass
+    except (psutil.NoSuchProcess, ProcessLookupError):
+        # Parent process already gone
         pass
-    except Exception:
+    except psutil.AccessDenied:
+        # Permission issue, try using standard subprocess methods on parent
         try:
             proc.terminate()
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:  # nosec B110
+                pass
+        except Exception:  # nosec B110
+            pass
+    except Exception:
+        # Any other exception fallback
+        try:
+            proc.terminate()
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except Exception:  # nosec B110
+                pass
+        except Exception:  # nosec B110
+            pass
 
+    # Ensure parent python subprocess object is fully reaped
     try:
         proc.wait(timeout=1)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=1)
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=1)
+        except Exception:  # nosec B110
+            pass
 
 
-@app.route('/api/scripts/run', methods=['POST'])
+SENTINEL = object()
+
+
+def _cleanup_execution(
+    proc,
+    execution,
+    run_id=None,
+    temp_path=None,
+    was_aborted=False,
+    error_message=None,
+    exit_code=None,
+    stop_event=None,
+    reader_thread=None,
+):
+    if execution is None:
+        # If execution wasn't initialized yet, we can still kill proc and remove temp file
+        if proc:
+            try:
+                _terminate_process_tree(proc)
+            except Exception as e:
+                logger.error(
+                    f"Error terminating process tree during early cleanup: {e}"
+                )
+        if temp_path:
+            for _ in range(3):
+                try:
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    break
+                except PermissionError:
+                    time.sleep(0.2)
+                except Exception as e:
+                    logger.error(f"Error removing temporary run script: {e}")
+                    break
+        if run_id:
+            with active_processes_lock:
+                if run_id in active_processes:
+                    del active_processes[run_id]
+        return
+
+    # Check cleanup flag for idempotency
+    if execution.get("cleaned_up"):
+        return
+    execution["cleaned_up"] = True
+
+    logger.info(f"Starting centralized cleanup for run_id: {run_id}")
+
+    # 1. Signal telemetry monitor thread to stop
+    if stop_event:
+        try:
+            stop_event.set()
+        except Exception as e:
+            logger.error(f"Error setting metrics stop event: {e}")
+
+    # 2. Hard process termination
+    if proc:
+        try:
+            if proc.poll() is None:
+                logger.info(f"Terminating process tree for pid: {proc.pid}")
+                _terminate_process_tree(proc)
+        except Exception as e:
+            logger.error(
+                f"Error during process tree termination for pid {proc.pid}: {e}"
+            )
+
+    # 3. Join the reader thread if provided
+    if reader_thread:
+        try:
+            reader_thread.join(timeout=1.0)
+        except Exception as e:
+            logger.error(f"Error joining reader thread: {e}")
+
+    # 4. Close process stream handles
+    if proc:
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(proc, stream_name, None)
+            if stream:
+                try:
+                    stream.close()
+                except Exception as e:
+                    logger.error(
+                        f"Error closing stream {stream_name} for pid {proc.pid}: {e}"
+                    )
+
+    # 5. Finalize execution record if still running/unfinalized
+    record = execution.get("record")
+    if record and record.get("status") == "running":
+        try:
+            elapsed = time.perf_counter() - execution.get(
+                "monotonic_start", time.perf_counter()
+            )
+            if exit_code is None:
+                exit_code = (
+                    proc.returncode if proc and proc.returncode is not None else -15
+                )
+
+            _finalize_execution(
+                execution,
+                success=False,
+                exit_code=exit_code,
+                duration_seconds=elapsed,
+                error_message=error_message
+                or ("Script aborted" if was_aborted else "Execution stopped"),
+            )
+        except Exception as e:
+            logger.error(f"Error finalizing execution record during cleanup: {e}")
+
+    # 6. Ensure the log file handle itself is closed even if finalize failed/skipped
+    handle = execution.get("handle")
+    if handle:
+        try:
+            if not handle.closed:
+                handle.flush()
+                handle.close()
+        except Exception as e:
+            logger.error(f"Error closing execution log handle: {e}")
+
+    # 7. Clean up active_processes tracking
+    if run_id:
+        with active_processes_lock:
+            if run_id in active_processes:
+                del active_processes[run_id]
+
+    # 8. Clean up temporary run script file if any (Windows safe with retries)
+    if temp_path:
+        for _ in range(3):
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    logger.info(f"Removed temporary run script: {temp_path}")
+                break
+            except PermissionError:
+                time.sleep(0.2)
+            except Exception as e:
+                logger.error(f"Error removing temporary run script {temp_path}: {e}")
+                break
+
+    logger.info(f"Cleanup finished for run_id: {run_id}")
+
+
+@app.route("/api/scripts/run", methods=["POST"])
 def run_script():
     data = request.json
-    rel_path = data.get('path', '')
-    password = data.get('password', '')
-    
+    rel_path = data.get("path", "")
+    password = data.get("password", "")
+
     if not check_lock(rel_path, password):
         return jsonify({'error': 'Locked', 'success': False}), 401
         
     full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
 
     if not os.path.exists(full_path):
-        return jsonify({'error': 'Script not found'}), 404
+        return jsonify({"error": "Script not found"}), 404
 
     run_id = str(uuid.uuid4())[:8]
     shell_cmd = _find_shell()
-    execution = _start_execution_record(
-        kind='script',
-        display_name=rel_path,
-        command_text=f'{shell_cmd} {full_path}',
-        shell_cmd=shell_cmd,
-        cwd=SCRIPTS_DIR,
-    )
 
     def generate():
         proc = None
         run_path = full_path
-        start_time = time.time()
+        start_time = time.perf_counter()
+        execution = None
+        stop_event = threading.Event()
+        t_reader = None
         try:
+            # 1. Initialize execution record inside generator to prevent leaks if not iterated
+            execution = _start_execution_record(
+                kind="script",
+                display_name=rel_path,
+                command_text=f"{shell_cmd} {full_path}",
+                shell_cmd=shell_cmd,
+                cwd=SCRIPTS_DIR,
+            )
+
             # Instrument script content for progress tracking
             try:
-                with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
                     content = f.read()
 
                 instrumented_content, steps = instrument_script(content)
@@ -2996,25 +3227,26 @@ def run_script():
                 if steps:
                     temp_dir = os.path.dirname(full_path)
                     temp_fd, temp_path = tempfile.mkstemp(
-                        suffix='.sh',
-                        prefix='.tmp_run_',
-                        dir=temp_dir
+                        suffix=".sh", prefix=".tmp_run_", dir=temp_dir
                     )
-                    with os.fdopen(temp_fd, 'w', encoding='utf-8', newline='\n') as temp_f:
+                    with os.fdopen(
+                        temp_fd, "w", encoding="utf-8", newline="\n"
+                    ) as temp_f:
                         temp_f.write(instrumented_content)
-                    
+
                     run_path = temp_path
                 else:
                     run_path = full_path
 
-            except Exception:
+            except Exception as e:
+                logger.error(f"Error instrumenting script: {e}")
                 run_path = full_path
 
             # Use main's Windows support with your run_path
             args = (
                 [shell_cmd, run_path]
-                if shell_cmd != 'cmd.exe'
-                else ['cmd.exe', '/c', run_path]
+                if shell_cmd != "cmd.exe"
+                else ["cmd.exe", "/c", run_path]
             )
 
             proc = subprocess.Popen(
@@ -3026,205 +3258,334 @@ def run_script():
                 bufsize=1,
                 universal_newlines=True,
                 shell=False
-            )
+            )  # nosec B603
 
             with active_processes_lock:
                 active_processes[run_id] = {
-                    'process': proc,
-                    'execution': execution,
-                    'start_time': start_time,
-                    'status': 'running',
-                    'aborted': False,
+                    "process": proc,
+                    "execution": execution,
+                    "start_time": time.time(),
+                    "status": "running",
+                    "aborted": False,
+                    "stop_event": stop_event,
                 }
 
-            metrics = {'cpu': 0.0, 'mem': 0.0}
-            t_metrics = threading.Thread(target=_track_metrics, args=(proc, metrics))
+            metrics = {"cpu": 0.0, "mem": 0.0}
+            t_metrics = threading.Thread(
+                target=_track_metrics, args=(proc, metrics, stop_event)
+            )
             t_metrics.start()
 
-            _append_execution_line(execution, 'system', f'Starting script execution... (ID: {run_id})')
-            start_msg = f'Starting script execution... (ID: {run_id})\n'
-            yield f"data: {json.dumps({'type': 'started', 'run_id': run_id, 'content': start_msg})}\n\n"
+            _append_execution_line(
+                execution, "system", f"Starting script execution... (ID: {run_id})"
+            )
+            start_msg = f"Starting script execution... (ID: {run_id})\n"
+            yield "data: " + json.dumps(
+                {"type": "started", "run_id": run_id, "content": start_msg}
+            ) + "\n\n"
 
-            for line in iter(proc.stdout.readline, ''):
-                if line:
+            # Set up non-blocking stdout reading thread with sentinel
+            out_queue = queue.Queue()
+
+            def stream_reader(stream, q):
+                try:
+                    for line in iter(stream.readline, ""):
+                        q.put(line)
+                except Exception as e:
+                    logger.error(f"Reader thread error: {e}")
+                finally:
+                    q.put(SENTINEL)
+                    try:
+                        stream.close()
+                    except Exception:  # nosec B110
+                        pass
+
+            t_reader = threading.Thread(
+                target=stream_reader, args=(proc.stdout, out_queue), daemon=True
+            )
+            t_reader.start()
+
+            while True:
+                try:
+                    line = out_queue.get(timeout=0.2)
+                    if line is SENTINEL:
+                        break
+
                     if run_path != full_path:
                         temp_basename = os.path.basename(run_path)
                         orig_basename = os.path.basename(full_path)
                         if temp_basename in line:
                             line = line.replace(temp_basename, orig_basename)
 
-                    if '::progress::' in line:
-                        match = re.search(r'::progress::(\d+)::(\d+)::(.*)', line)
+                    if "::progress::" in line:
+                        match = re.search(r"::progress::(\d+)::(\d+)::(.*)", line)
                         if match:
                             step_idx = int(match.group(1))
                             total_steps = int(match.group(2))
                             cmd_text = match.group(3).strip()
-                            yield f"data: {json.dumps({'type': 'progress', 'step': step_idx, 'total': total_steps, 'command': cmd_text})}\n\n"
+                            yield "data: " + json.dumps(
+                                {
+                                    "type": "progress",
+                                    "step": step_idx,
+                                    "total": total_steps,
+                                    "command": cmd_text,
+                                }
+                            ) + "\n\n"
                             continue
 
                     # Heuristic to detect errors in the combined stream
                     l_lower = line.lower()
-                    msg_type = 'stdout'
-                    if any(err in l_lower for err in ['error:', 'failed:', 'not found', 'denied', 'no such file']):
-                        msg_type = 'error'
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
                     _append_execution_line(execution, msg_type, line)
-                    yield f"data: {json.dumps({'type': msg_type, 'content': line})}\n\n"
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    # Timeout reached, check if process died
+                    if proc.poll() is not None:
+                        break
 
-            proc.stdout.close()
-            proc.wait(timeout=10)
-            t_metrics.join(timeout=1)
+            # Process finished. Re-check the queue to drain any remaining outputs
+            while True:
+                try:
+                    line = out_queue.get_nowait()
+                    if line is SENTINEL:
+                        break
 
-            end_time = time.time()
+                    if run_path != full_path:
+                        temp_basename = os.path.basename(run_path)
+                        orig_basename = os.path.basename(full_path)
+                        if temp_basename in line:
+                            line = line.replace(temp_basename, orig_basename)
+
+                    if "::progress::" in line:
+                        match = re.search(r"::progress::(\d+)::(\d+)::(.*)", line)
+                        if match:
+                            step_idx = int(match.group(1))
+                            total_steps = int(match.group(2))
+                            cmd_text = match.group(3).strip()
+                            yield "data: " + json.dumps(
+                                {
+                                    "type": "progress",
+                                    "step": step_idx,
+                                    "total": total_steps,
+                                    "command": cmd_text,
+                                }
+                            ) + "\n\n"
+                            continue
+
+                    l_lower = line.lower()
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
+                    _append_execution_line(execution, msg_type, line)
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    break
+
+            proc.wait(timeout=5)
+            t_metrics.join(timeout=1.0)
+            t_reader.join(timeout=1.0)
+
+            end_time = time.perf_counter()
             elapsed = end_time - start_time
 
             was_aborted = False
             with active_processes_lock:
                 entry = active_processes.get(run_id)
-                if entry and entry.get('aborted'):
+                if entry and entry.get("aborted"):
                     was_aborted = True
 
             if was_aborted:
-                _append_execution_line(execution, 'system', f'Script aborted (exit code {proc.returncode})')
+                _append_execution_line(
+                    execution, "system", f"Script aborted (exit code {proc.returncode})"
+                )
                 _finalize_execution(
                     execution,
                     success=False,
                     exit_code=proc.returncode if proc.returncode is not None else -15,
                     duration_seconds=elapsed,
-                    error_message='Script aborted by user',
+                    error_message="Script aborted by user",
                 )
                 abort_msg = 'Script aborted\n'
                 yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': abort_msg})}\n\n"
             else:
                 system_mem = psutil.virtual_memory().total / (1024 * 1024)
-                mem_percent = (metrics['mem'] / system_mem * 100) if system_mem > 0 else 0
+                mem_percent = (
+                    (metrics["mem"] / system_mem * 100) if system_mem > 0 else 0
+                )
 
                 resource_info = {
-                    'execution_time': round(elapsed, 3),
-                    'execution_time_formatted': _format_time(elapsed),
-                    'exit_code': proc.returncode,
-                    'cpu_percent': metrics['cpu'],
-                    'memory_used_mb': metrics['mem'],
-                    'memory_total_mb': round(system_mem, 1),
-                    'memory_percent': round(mem_percent, 2),
+                    "execution_time": round(elapsed, 3),
+                    "execution_time_formatted": _format_time(elapsed),
+                    "exit_code": proc.returncode,
+                    "cpu_percent": metrics["cpu"],
+                    "memory_used_mb": metrics["mem"],
+                    "memory_total_mb": round(system_mem, 1),
+                    "memory_percent": round(mem_percent, 2),
                 }
 
-                _append_execution_line(execution, 'system', f'Script completed with exit code {proc.returncode}')
+                _append_execution_line(
+                    execution,
+                    "system",
+                    f"Script completed with exit code {proc.returncode}",
+                )
                 _finalize_execution(
                     execution,
                     success=proc.returncode == 0,
                     exit_code=proc.returncode,
                     duration_seconds=elapsed,
-                    resources=resource_info,
+                    resource_usage=resource_info,
                 )
-                yield f"data: {json.dumps({'type': 'metrics', 'resources': resource_info, 'exit_code': proc.returncode, 'success': proc.returncode == 0})}\n\n"
-        except subprocess.TimeoutExpired:
-            was_aborted = False
-            with active_processes_lock:
-                entry = active_processes.get(run_id)
-                if entry and entry.get('aborted'):
-                    was_aborted = True
+                yield "data: " + json.dumps(
+                    {
+                        "type": "metrics",
+                        "resources": resource_info,
+                        "exit_code": proc.returncode,
+                        "success": proc.returncode == 0,
+                    }
+                ) + "\n\n"
 
-            if proc:
-                _terminate_process_tree(proc)
-
-            if was_aborted:
-                _append_execution_line(execution, 'system', f'Script aborted (exit code {proc.returncode})')
-                _finalize_execution(
-                    execution,
-                    success=False,
-                    exit_code=proc.returncode if proc and proc.returncode is not None else -15,
-                    duration_seconds=time.time() - start_time,
-                    error_message='Script aborted by user',
-                )
-                abort_msg = 'Script aborted\n'
-                yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': abort_msg})}\n\n"
-            else:
-                _append_execution_line(execution, 'error', '❌ Execution timed out')
-                _finalize_execution(
-                    execution,
-                    success=False,
-                    exit_code=-1,
-                    duration_seconds=time.time() - start_time,
-                    error_message='Process timed out',
-                )
-                timeout_msg = '❌ Execution timed out\n'
-                yield f"data: {json.dumps({'type': 'error', 'content': timeout_msg})}\n\n"
-        except Exception as e:
-            _append_execution_line(execution, 'error', f'❌ Execution Error: {str(e)}')
-            if proc is not None and getattr(proc, 'returncode', None) is not None:
-                exit_code = proc.returncode
-            else:
-                exit_code = -1
-            _finalize_execution(
-                execution,
-                success=False,
-                exit_code=exit_code,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e),
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError) as e:
+            logger.info(
+                f"SSE script client disconnected or pipe broken (run_id: {run_id}): {type(e).__name__}"
             )
-            yield f"data: {json.dumps({'type': 'error', 'content': f'❌ Execution Error: {str(e)}'})}\n\n"
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                temp_path=run_path if run_path != full_path else None,
+                was_aborted=True,
+                error_message="Client disconnected",
+                stop_event=stop_event,
+                reader_thread=t_reader,
+            )
+            raise
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Script run_id {run_id} execution timed out")
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                temp_path=run_path if run_path != full_path else None,
+                was_aborted=False,
+                error_message="Execution timed out",
+                stop_event=stop_event,
+                reader_thread=t_reader,
+            )
+            yield "data: " + json.dumps(
+                {"type": "error", "content": "❌ Execution timed out\n"}
+            ) + "\n\n"
+        except Exception as e:
+            logger.error(
+                f"Script run_id {run_id} execution encountered exception: {e}",
+                exc_info=True,
+            )
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                temp_path=run_path if run_path != full_path else None,
+                was_aborted=False,
+                error_message=str(e),
+                stop_event=stop_event,
+                reader_thread=t_reader,
+            )
+            yield "data: " + json.dumps(
+                {"type": "error", "content": f"❌ Execution Error: {str(e)}"}
+            ) + "\n\n"
         finally:
-            if 'run_path' in locals() and run_path != full_path:
-                try:
-                    if os.path.exists(run_path):
-                        os.remove(run_path)
-                except Exception:
-                    pass
-            with active_processes_lock:
-                if run_id in active_processes:
-                    del active_processes[run_id]
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                temp_path=run_path if run_path != full_path else None,
+                stop_event=stop_event,
+                reader_thread=t_reader,
+            )
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(generate(), mimetype="text/event-stream")
 
 
-@app.route('/api/scripts/kill', methods=['POST'])
+@app.route("/api/scripts/kill", methods=["POST"])
 def kill_script():
     data = request.json or {}
-    run_id = data.get('run_id', '')
+    run_id = data.get("run_id", "")
 
     if not run_id:
-        return jsonify({'error': 'run_id is required'}), 400
+        return jsonify({"error": "run_id is required"}), 400
 
     with active_processes_lock:
         entry = active_processes.get(run_id)
         if not entry:
-            return jsonify({'error': 'No running process found for this run_id'}), 404
-        proc = entry['process']
+            return jsonify({"error": "No running process found for this run_id"}), 404
+        proc = entry["process"]
         if proc.poll() is not None:
-            return jsonify({'error': 'No running process found for this run_id'}), 404
-        entry['aborted'] = True
+            return jsonify({"error": "No running process found for this run_id"}), 404
+        entry["aborted"] = True
 
     _terminate_process_tree(proc)
 
-    return jsonify({'success': True, 'run_id': run_id})
+    return jsonify({"success": True, "run_id": run_id})
 
 
-@app.route('/api/exec', methods=['POST'])
+@app.route("/api/exec", methods=["POST"])
 def exec_command():
     data = request.json
-    command = data.get('command', '')
+    command = data.get("command", "")
 
     if not command:
-        return jsonify({'error': 'No command provided'}), 400
+        return jsonify({"error": "No command provided"}), 400
 
     save_command_history(command)
 
     shell_cmd = _find_shell()
-    execution = _start_execution_record(
-        kind='command',
-        display_name=command,
-        command_text=command,
-        shell_cmd=shell_cmd,
-        cwd=SCRIPTS_DIR,
-    )
+    run_id = f"cmd_{uuid.uuid4().hex[:8]}"
 
     def generate():
         proc = None
-        start_time = time.time()
+        start_time = time.perf_counter()
+        execution = None
+        t_reader = None
         try:
+            # Initialize execution record inside generator to prevent leaks if not iterated
+            execution = _start_execution_record(
+                kind="command",
+                display_name=command,
+                command_text=command,
+                shell_cmd=shell_cmd,
+                cwd=SCRIPTS_DIR,
+            )
+
             # Need to format for Windows/Linux subshells correctly
-            args = [shell_cmd, '-c', command] if shell_cmd != 'cmd.exe' else ['cmd.exe', '/c', command]
-            
+            args = (
+                [shell_cmd, "-c", command]
+                if shell_cmd != "cmd.exe"
+                else ["cmd.exe", "/c", command]
+            )
+
             proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
@@ -3234,100 +3595,212 @@ def exec_command():
                 bufsize=1,
                 universal_newlines=True,
                 shell=False
+            )  # nosec B603
+
+            with active_processes_lock:
+                active_processes[run_id] = {
+                    "process": proc,
+                    "execution": execution,
+                    "start_time": time.time(),
+                    "status": "running",
+                    "aborted": False,
+                }
+
+            # Set up non-blocking stdout reading thread with sentinel
+            out_queue = queue.Queue()
+
+            def stream_reader(stream, q):
+                try:
+                    for line in iter(stream.readline, ""):
+                        q.put(line)
+                except Exception as e:
+                    logger.error(f"Command reader thread error: {e}")
+                finally:
+                    q.put(SENTINEL)
+                    try:
+                        stream.close()
+                    except Exception:  # nosec B110
+                        pass
+
+            t_reader = threading.Thread(
+                target=stream_reader, args=(proc.stdout, out_queue), daemon=True
             )
-            
-            for line in iter(proc.stdout.readline, ''):
-                if line:
+            t_reader.start()
+
+            while True:
+                try:
+                    line = out_queue.get(timeout=0.2)
+                    if line is SENTINEL:
+                        break
+
                     l_lower = line.lower()
-                    msg_type = 'stdout'
-                    if any(err in l_lower for err in ['error:', 'failed:', 'not found', 'denied', 'no such file']):
-                        msg_type = 'error'
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
                     _append_execution_line(execution, msg_type, line)
-                    yield f"data: {json.dumps({'type': msg_type, 'content': line})}\n\n"
-                    
-            proc.stdout.close()
-            proc.wait(timeout=10)
-            elapsed = time.time() - start_time
-            _append_execution_line(execution, 'system', f'Command completed with exit code {proc.returncode}')
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    # Timeout reached, check if process died
+                    if proc.poll() is not None:
+                        break
+
+            # Process finished. Drain queue of any remaining logs
+            while True:
+                try:
+                    line = out_queue.get_nowait()
+                    if line is SENTINEL:
+                        break
+
+                    l_lower = line.lower()
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
+                    _append_execution_line(execution, msg_type, line)
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    break
+
+            proc.wait(timeout=5)
+            t_reader.join(timeout=1.0)
+
+            elapsed = time.perf_counter() - start_time
+            _append_execution_line(
+                execution,
+                "system",
+                f"Command completed with exit code {proc.returncode}",
+            )
             _finalize_execution(
                 execution,
                 success=proc.returncode == 0,
                 exit_code=proc.returncode,
                 duration_seconds=elapsed,
             )
-            yield f"data: {json.dumps({'type': 'metrics', 'exit_code': proc.returncode, 'success': proc.returncode == 0, 'duration': round(elapsed, 3)})}\n\n"
-        except Exception as e:
-            _append_execution_line(execution, 'error', f'❌ Command Error: {str(e)}')
-            if proc is not None and getattr(proc, 'returncode', None) is not None:
-                exit_code = proc.returncode
-            else:
-                exit_code = -1
-            _finalize_execution(
-                execution,
-                success=False,
-                exit_code=exit_code,
-                duration_seconds=time.time() - start_time,
-                error_message=str(e),
+            yield "data: " + json.dumps(
+                {
+                    "type": "metrics",
+                    "exit_code": proc.returncode,
+                    "success": proc.returncode == 0,
+                    "duration": round(elapsed, 3),
+                }
+            ) + "\n\n"
+
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError) as e:
+            logger.info(
+                f"SSE command client disconnected or pipe broken (run_id: {run_id}): {type(e).__name__}"
             )
-            yield f"data: {json.dumps({'type': 'error', 'content': f'❌ Command Error: {str(e)}'})}\n\n"
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                was_aborted=True,
+                error_message="Client disconnected",
+                reader_thread=t_reader,
+            )
+            raise
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Command execution timed out (run_id: {run_id})")
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                was_aborted=False,
+                error_message="Execution timed out",
+                reader_thread=t_reader,
+            )
+            yield "data: " + json.dumps(
+                {"type": "error", "content": "❌ Execution timed out\n"}
+            ) + "\n\n"
+        except Exception as e:
+            logger.error(
+                f"Command run_id {run_id} execution encountered exception: {e}",
+                exc_info=True,
+            )
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                was_aborted=False,
+                error_message=str(e),
+                reader_thread=t_reader,
+            )
+            yield "data: " + json.dumps(
+                {"type": "error", "content": f"❌ Command Error: {str(e)}"}
+            ) + "\n\n"
+        finally:
+            _cleanup_execution(proc, execution, run_id=run_id, reader_thread=t_reader)
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(generate(), mimetype="text/event-stream")
 
 
-@app.route('/api/sessions/save', methods=['POST'])
+@app.route("/api/sessions/save", methods=["POST"])
 def save_session():
     data = request.json
-    session_data = data.get('session', {})
+    session_data = data.get("session", {})
 
     try:
         sessions = load_sessions()
 
-        sessions['last_session'] = session_data
-        sessions['last_updated'] = time.time()
+        sessions["last_session"] = session_data
+        sessions["last_updated"] = time.time()
 
         save_sessions(sessions)
 
-        return jsonify({
-            'success': True
-        })
+        return jsonify({"success": True})
 
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/sessions/restore', methods=['GET'])
+@app.route("/api/sessions/restore", methods=["GET"])
 def restore_session():
     try:
         sessions = load_sessions()
 
-        return jsonify({
-            'success': True,
-            'session': sessions.get('last_session', {})
-        })
+        return jsonify({"success": True, "session": sessions.get("last_session", {})})
 
     except Exception as e:
-        return jsonify({
-            'success': False,
-            'error': str(e)
-        }), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
-@app.route('/api/scripts/save', methods=['POST'])
+@app.route("/api/scripts/save", methods=["POST"])
 def save_script():
     data = request.json
-    category = data.get('category', '').strip()
-    filename = data.get('filename', '').strip()
-    content = data.get('content', '')
-    provided_pass = data.get('password', '')
+    category = data.get("category", "").strip()
+    filename = data.get("filename", "").strip()
+    content = data.get("content", "")
+    provided_pass = data.get("password", "")
 
     if not category or not filename:
-        return jsonify({'error': 'Category and filename required'}), 400
+        return jsonify({"error": "Category and filename required"}), 400
 
-    if not filename.endswith('.sh'):
-        filename += '.sh'
+    if not filename.endswith(".sh"):
+        filename += ".sh"
+
+    category = category.replace("..", "").replace("/", "").replace("\\", "")
+    filename = filename.replace("..", "").replace("/", "").replace("\\", "")
+    rel_path = f"{category}/{filename}"
 
     rel_path = f'{category}/{filename}'
     
@@ -3335,23 +3808,22 @@ def save_script():
     full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
     
     if not check_lock(rel_path, provided_pass):
-        return jsonify({'error': 'Locked', 'success': False}), 401
+        return jsonify({"error": "Locked", "success": False}), 401
 
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-    full_path = os.path.join(os.path.dirname(full_path), filename)
     with open(full_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write(content)
 
-    return jsonify({'success': True, 'path': rel_path})
+    return jsonify({"success": True, "path": rel_path})
 
 
-@app.route('/api/scripts/delete', methods=['DELETE'])
+@app.route("/api/scripts/delete", methods=["DELETE"])
 def delete_script():
     data = request.json or {}
-    rel_path = request.args.get('path', '') or data.get('path', '')
-    provided_pass = data.get('password', '')
-    
+    rel_path = request.args.get("path", "") or data.get("path", "")
+    provided_pass = data.get("password", "")
+
     if not check_lock(rel_path, provided_pass):
         return jsonify({'error': 'Locked', 'success': False}), 401
         
@@ -3369,15 +3841,15 @@ def delete_script():
         if rel_path in locks:
             del locks[rel_path]
             save_locks(locks)
-        return jsonify({'success': True})
+        return jsonify({"success": True})
 
-    return jsonify({'error': 'Script not found'}), 404
+    return jsonify({"error": "Script not found"}), 404
 
 
-@app.route('/api/scripts/favorite', methods=['POST'])
+@app.route("/api/scripts/favorite", methods=["POST"])
 def toggle_favorite():
     data = request.json
-    rel_path = data.get('path', '')
+    rel_path = data.get("path", "")
     favs = load_favorites()
 
     if rel_path in favs:
@@ -3388,20 +3860,20 @@ def toggle_favorite():
         is_fav = True
 
     save_favorites(favs)
-    return jsonify({'favorite': is_fav})
+    return jsonify({"favorite": is_fav})
 
 
-@app.route('/api/scripts/lock', methods=['POST'])
+@app.route("/api/scripts/lock", methods=["POST"])
 def manage_lock():
     data = request.json
-    rel_path = data.get('path', '')
-    old_pass = data.get('old_password', '')
-    new_pass = data.get('new_password', '') # empty string removes lock!
-    
+    rel_path = data.get("path", "")
+    old_pass = data.get("old_password", "")
+    new_pass = data.get("new_password", "")  # empty string removes lock!
+
     # Verify current lock
     if not check_lock(rel_path, old_pass):
-        return jsonify({'error': 'Incorrect current password', 'success': False}), 401
-        
+        return jsonify({"error": "Incorrect current password", "success": False}), 401
+
     locks = load_locks()
     if new_pass:
         locks[rel_path] = generate_password_hash(new_pass)
@@ -3410,7 +3882,7 @@ def manage_lock():
             del locks[rel_path]
 
     save_locks(locks)
-    return jsonify({'success': True, 'locked': bool(new_pass)})
+    return jsonify({"success": True, "locked": bool(new_pass)})
 
 class BlockRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -3425,38 +3897,39 @@ class BlockRedirectHandler(urllib.request.HTTPRedirectHandler):
 @app.route('/api/scripts/import_github', methods=['POST'])
 def import_github():
     data = request.json
-    url = data.get('url', '').strip()
-    category = data.get('category', '').strip()
-    filename = data.get('filename', '').strip()
+    url = data.get("url", "").strip()
+    category = data.get("category", "").strip()
+    filename = data.get("filename", "").strip()
 
     if not url or not category or not filename:
-        return jsonify({
-            'error': 'Missing fields',
-            'success': False
-        }), 400
+        return jsonify({"error": "Missing fields", "success": False}), 400
 
-    if not filename.endswith('.sh'):
-        filename += '.sh'
+    if not filename.endswith(".sh"):
+        filename += ".sh"
 
     # Convert standard GitHub URL → raw URL
     if "github.com" in url and "/blob/" in url:
-        url = (
-            url.replace(
-                "github.com",
-                "raw.githubusercontent.com"
-            )
-            .replace("/blob/", "/")
+        url = url.replace("github.com", "raw.githubusercontent.com").replace(
+            "/blob/", "/"
         )
 
     # SSRF guard: only allow GitHub domains after rewrite
     _parsed = urllib.parse.urlparse(url)
-    _ALLOWED = {'github.com', 'raw.githubusercontent.com'}
-    _ALLOWED_SCHEMES = {'http', 'https'}
-    if _parsed.scheme.lower() not in _ALLOWED_SCHEMES or _parsed.hostname not in _ALLOWED:
-        return jsonify({'error': 'Only GitHub URLs are allowed', 'success': False}), 400
+    _ALLOWED = {"github.com", "raw.githubusercontent.com"}
+    _ALLOWED_SCHEMES = {"http", "https"}
+    if (
+        _parsed.scheme.lower() not in _ALLOWED_SCHEMES
+        or _parsed.hostname not in _ALLOWED
+    ):
+        return jsonify({"error": "Only GitHub URLs are allowed", "success": False}), 400
+
+    # Reconstruct the URL using only the validated components to prevent parser differentials
+    safe_url = f"{_parsed.scheme}://{_parsed.hostname}{_parsed.path}"
+    if _parsed.query:
+        safe_url += f"?{_parsed.query}"
 
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 DevShell'})
+        req = urllib.request.Request(safe_url, headers={'User-Agent': 'Mozilla/5.0 DevShell'})
         opener = urllib.request.build_opener(BlockRedirectHandler)
 
         with opener.open(req, timeout=10) as response:
@@ -3464,73 +3937,65 @@ def import_github():
 
         # Prevent huge imports
         if len(raw_bytes) > 500000:
-            return jsonify({
-                'error': 'File too large (max 500KB)',
-                'success': False
-            }), 400
+            return (
+                jsonify({"error": "File too large (max 500KB)", "success": False}),
+                400,
+            )
 
         try:
-            content = raw_bytes.decode('utf-8')
+            content = raw_bytes.decode("utf-8")
 
         except UnicodeDecodeError:
-            return jsonify({
-                'error': 'Only UTF-8 text files are supported',
-                'success': False
-            }), 400
+            return (
+                jsonify(
+                    {"error": "Only UTF-8 text files are supported", "success": False}
+                ),
+                400,
+            )
 
         # Reject binary payloads
-        if '\0' in content:
-            return jsonify({
-                'error': 'Binary files are not supported',
-                'success': False
-            }), 400
+        if "\0" in content:
+            return (
+                jsonify({"error": "Binary files are not supported", "success": False}),
+                400,
+            )
 
     except Exception as e:
-        return jsonify({
-            'error': f'Failed to fetch from GitHub: {str(e)}',
-            'success': False
-        }), 400
+        return (
+            jsonify(
+                {"error": f"Failed to fetch from GitHub: {str(e)}", "success": False}
+            ),
+            400,
+        )
 
     rel_path = f'{category}/{filename}'
     
     # Secure path validation
     full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
-
     # Respect existing lock protection
-    if not check_lock(rel_path, ''):
-        return jsonify({
-            'error': 'File exists and is locked!',
-            'success': False
-        }), 401
+    if not check_lock(rel_path, ""):
+        return jsonify({"error": "File exists and is locked!", "success": False}), 401
 
     os.makedirs(os.path.dirname(full_path), exist_ok=True)
-    full_path = os.path.join(os.path.dirname(full_path), filename)
 
-    with open(
-        full_path,
-        'w',
-        encoding='utf-8',
-        newline='\n'
-    ) as f:
+    with open(full_path, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
 
-    return jsonify({
-        'success': True,
-        'path': rel_path
-    })
+    return jsonify({"success": True, "path": rel_path})
+
 
 # --- NEW FEATURE: Raise PR / Push to Git ---
-@app.route('/api/git/pr', methods=['POST'])
+@app.route("/api/git/pr", methods=["POST"])
 def raise_pr():
     # Parse the request payload for the script path, branch, commit message, and optional target repo
     data = request.json
-    rel_path = data.get('path', '')
-    branch_name = data.get('branch', f'script-contribution-{str(uuid.uuid4())[:4]}')
-    commit_msg = data.get('message', f'Contribution: {rel_path}')
-    target_repo = data.get('target_repo', '').strip()
-    
+    rel_path = data.get("path", "")
+    branch_name = data.get("branch", f"script-contribution-{str(uuid.uuid4())[:4]}")
+    commit_msg = data.get("message", f"Contribution: {rel_path}")
+    target_repo = data.get("target_repo", "").strip()
+
     if not rel_path:
-        return jsonify({'error': 'No script path provided', 'success': False}), 400
+        return jsonify({"error": "No script path provided", "success": False}), 400
 
     full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
 
@@ -3538,44 +4003,49 @@ def raise_pr():
         target_repo = validate_repo_name(target_repo)
     branch_name = validate_git_branch(branch_name)
 
+    git_path = shutil.which("git") or "git"
+
     try:
         # Check if we are in a git repo
-        subprocess.run(['git', 'rev-parse', '--is-inside-work-tree'], check=True, capture_output=True, shell=False)
+        subprocess.run([git_path, 'rev-parse', '--is-inside-work-tree'], check=True, capture_output=True, shell=False)  # nosec B603 B607
         
         # 1. Create new local branch for the contribution
-        checkout_existing = subprocess.run(['git', 'checkout', branch_name], capture_output=True, shell=False)
+        checkout_existing = subprocess.run([git_path, 'checkout', branch_name], capture_output=True, shell=False)  # nosec B603 B607
         if checkout_existing.returncode != 0:
-            subprocess.run(['git', 'checkout', '-b', branch_name], check=True, capture_output=True, shell=False)
+            subprocess.run([git_path, 'checkout', '-b', branch_name], check=True, capture_output=True, shell=False)  # nosec B603 B607
         
         # 2. Stage only the specific script file
-        subprocess.run(['git', 'add', full_path], check=True, capture_output=True, shell=False)
+        subprocess.run([git_path, 'add', full_path], check=True, capture_output=True, shell=False)  # nosec B603 B607
         
         # 3. Commit the changes
-        subprocess.run(['git', 'commit', '-m', commit_msg], check=True, capture_output=True, shell=False)
+        subprocess.run([git_path, 'commit', '-m', commit_msg], check=True, capture_output=True, shell=False)  # nosec B603 B607
         
         # 4. Push to target remote
         # If the user provided a specific target repository URL, we push directly to it.
         # Otherwise, we push to the default 'origin'.
         remote_to_push = target_repo if target_repo else 'origin'
-        subprocess.run(['git', 'push', '-u', remote_to_push, branch_name], check=True, capture_output=True, shell=False)
-        
+        subprocess.run([git_path, 'push', '-u', remote_to_push, branch_name], check=True, capture_output=True, shell=False)  # nosec B603 B607
         # 5. Generate a GitHub PR Link
         # If an external repo URL was provided, use that to construct the base URL.
         if target_repo:
-            remote_url = target_repo.replace('.git', '')
+            remote_url = target_repo.replace(".git", "")
         else:
-            remote_res = subprocess.run(['git', 'remote', 'get-url', 'origin'], check=True, capture_output=True, text=True, shell=False)
+            remote_res = subprocess.run([git_path, 'remote', 'get-url', 'origin'], check=True, capture_output=True, text=True, shell=False)  # nosec B603 B607
             remote_url = remote_res.stdout.strip().replace('.git', '')
             
         if remote_url.startswith('git@github.com:'):
             remote_url = remote_url.replace('git@github.com:', 'https://github.com/')
             
         # Append the /compare path to take the user directly to the PR creation screen
-        pr_url = f"{remote_url}/compare/main...{branch_name}" if "github.com" in remote_url else remote_url
-        
+        pr_url = (
+            f"{remote_url}/compare/main...{branch_name}"
+            if "github.com" in remote_url
+            else remote_url
+        )
+
         # 6. Switch back to the main branch to keep the workspace stable
         default_branch = get_default_branch()
-        subprocess.run(['git', 'checkout', default_branch], check=True, capture_output=True, shell=False)
+        subprocess.run([git_path, 'checkout', default_branch], check=True, capture_output=True, shell=False)  # nosec B603 B607
         
         return jsonify({'success': True, 'pr_url': pr_url, 'branch': branch_name})
         
@@ -3583,52 +4053,57 @@ def raise_pr():
         err_msg = e.stderr.decode() if e.stderr else str(e)
         # Attempt recovery to main
         default_branch = get_default_branch()
-        subprocess.run(['git', 'checkout', default_branch], capture_output=True, shell=False)
+        subprocess.run([git_path, 'checkout', default_branch], capture_output=True, shell=False)  # nosec B603 B607
         return jsonify({'error': err_msg, 'success': False}), 500
     except Exception as e:
-        return jsonify({'error': str(e), 'success': False}), 500
+        return jsonify({"error": str(e), "success": False}), 500
 
 
 # ─── Helpers ──────────────────────────────────────────────────────
+
 
 def _find_shell():
     """Find available bash shell on the system."""
     import platform
     import shutil
+
     candidates = [
-        r'C:\Program Files\Git\bin\bash.exe',
-        r'C:\Program Files (x86)\Git\bin\bash.exe',
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
     ]
     for candidate in candidates:
         if os.path.isfile(candidate):
             return candidate
 
-    for shell in ['bash', 'sh']:
+    for shell in ["bash", "sh"]:
         found = shutil.which(shell)
         if found:
             return found
 
-    if platform.system() == 'Windows':
-        return 'cmd.exe'
+    if platform.system() == "Windows":
+        return "cmd.exe"
 
-    return 'sh'
+    return "sh"
+
 
 def get_default_branch():
     try:
+        git_path = shutil.which("git") or "git"
         result = subprocess.run(
-            ['git', 'symbolic-ref', 'refs/remotes/origin/HEAD'],
+            [git_path, "symbolic-ref", "refs/remotes/origin/HEAD"],
             capture_output=True,
             text=True,
             check=True,
             shell=False
-        )
+        )  # nosec B603 B607
 
         ref = result.stdout.strip()
 
-        return ref.split('/')[-1]
+        return ref.split("/")[-1]
 
     except Exception:
-        return 'main'
+        return "main"
+
 
 def _format_time(seconds):
     if seconds < 0.001:
@@ -3665,7 +4140,7 @@ def _server_port() -> int:
     return port
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     port = _server_port()
     debug = os.environ.get("FLASK_DEBUG") == "1"
     print(f"[*] DevShell starting on http://127.0.0.1:{port}")

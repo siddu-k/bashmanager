@@ -1,0 +1,56 @@
+name: Documentation issue
+description: Report a problem with the documentation or suggest improvements.
+title: "[DOCS] <description>"
+labels:
+  - documentation
+
+body:
+  - type: input
+    id: short_description
+    attributes:
+      label: Short description
+      description: Brief summary of the issue
+      placeholder: Brief summary of the issue
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the issue
+      description: Provide a clear and concise description of the documentation problem.
+      placeholder: Describe the issue here
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: Describe the steps that lead to the documentation issue.
+      placeholder: 1) Open ...\n2) Notice ...\n3) ...
+
+  - type: textarea
+    id: resources
+    attributes:
+      label: Resources / Logs
+      description: Attach or paste links to relevant docs, screenshots, or logs.
+      placeholder: Links or pasted content
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      description: Confirm the following before submitting.
+      options:
+        - label: I have read the contributing guidelines
+          value: read_contributing
+        - label: I have checked for duplicate issues
+          value: checked_duplicates
+        - label: I would like to work on a pull request to fix this
+          value: will_work_on_pr
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional information
+      description: Any other context that may help.
+      placeholder: Add any extra details here

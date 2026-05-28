@@ -1,6 +1,7 @@
 const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 const http = require('http');
 const net = require('net');
 
@@ -18,9 +19,20 @@ const POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
 
 // We must preserve the python path to our bundled app or local python
-const pythonCmd = process.env.VIRTUAL_ENV
-    ? path.join(process.env.VIRTUAL_ENV, 'bin', 'python')
-    : (process.platform === 'win32' ? 'python' : 'python3');
+function resolvePythonCmd() {
+    const venv = process.env.VIRTUAL_ENV;
+    if (venv) {
+        const venvPython = process.platform === 'win32'
+            ? path.join(venv, 'Scripts', 'python.exe')
+            : path.join(venv, 'bin', 'python');
+        if (fs.existsSync(venvPython)) {
+            return venvPython;
+        }
+    }
+    return process.platform === 'win32' ? 'python' : 'python3';
+}
+
+const pythonCmd = resolvePythonCmd();
 
 function parseDevShellPort(raw) {
     if (raw === undefined || raw === '') {

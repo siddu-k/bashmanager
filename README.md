@@ -133,6 +133,30 @@ Contributions from the open-source community are welcome. Please adhere to the f
 4. Push to the branch (`git push origin feature/NewFeature`).
 5. Open a Pull Request detailing the technical changes and architectural impact.
 
+## Contributors
+
+Thanks to all the amazing people who contribute to **bashmanager** 🚀
+
+<p align="center">
+  <a href="https://github.com/siddu-k/bashmanager/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=siddu-k/bashmanager" alt="Contributors"/>
+  </a>
+</p>
+
+<br>
+
+## Project Support
+
+<p align="center">
+  <a href="https://github.com/siddu-k/bashmanager/stargazers">
+    <img src="https://img.shields.io/github/stars/siddu-k/bashmanager?style=social" alt="Stars">
+  </a>
+  &nbsp;&nbsp;
+  <a href="https://github.com/siddu-k/bashmanager/network/members">
+    <img src="https://img.shields.io/github/forks/siddu-k/bashmanager?style=social" alt="Forks">
+  </a>
+</p>
+
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE).
