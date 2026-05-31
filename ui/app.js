@@ -25,6 +25,7 @@ const API = {
     reliability_trends: '/api/reliability/trends',
     reliability_recommendations: '/api/reliability/recommendations',
     reliability_diagnostics: '/api/reliability/diagnostics',
+    master_status: '/api/master/status',
 };
 
 // ─── State ────────────────────────────────────────────────
@@ -39,6 +40,7 @@ let state = {
     cmdHistoryIndex: -1,
     historyQuery: '',
     historyFilter: 'all',
+    masterPassword: null,
     historyEntries: [],
     historySummary: {
         total: 0,
@@ -136,6 +138,70 @@ const ICONS = {
 function getCategoryIcon(name) {
     return ICONS[name.toLowerCase()] || ICONS.default;
 }
+
+// ─── Global Fetch Wrapper ──────────────────────────────────────────
+const originalFetch = window.fetch;
+window.fetch = async function(...args) {
+    let [resource, config] = args;
+    config = config || {};
+    
+    if (typeof resource === 'string' && resource.startsWith('/api/') && state.masterPassword) {
+        config.headers = config.headers || {};
+        config.headers['X-Master-Password'] = state.masterPassword;
+    }
+    
+    let res = await originalFetch(resource, config);
+    
+    if (res.status === 401) {
+        try {
+            const clone = res.clone();
+            const data = await clone.json();
+            if (data.master_locked) {
+                return new Promise((resolve, reject) => {
+                    const modal = document.getElementById('master-auth-modal');
+                    const input = document.getElementById('master-auth-password');
+                    const submit = document.getElementById('master-auth-submit');
+                    
+                    if (!modal) return resolve(res);
+                    
+                    modal.classList.add('active');
+                    input.value = '';
+                    input.focus();
+                    
+                    const cleanup = () => {
+                        submit.removeEventListener('click', onSubmit);
+                        input.removeEventListener('keydown', onKey);
+                    };
+
+                    const onSubmit = async () => {
+                        const pwd = input.value;
+                        if (!pwd) return;
+                        
+                        state.masterPassword = pwd;
+                        modal.classList.remove('active');
+                        cleanup();
+                        
+                        try {
+                            const retryRes = await window.fetch(resource, config);
+                            resolve(retryRes);
+                        } catch (e) {
+                            reject(e);
+                        }
+                    };
+                    
+                    const onKey = (e) => { if (e.key === 'Enter') onSubmit(); };
+                    
+                    submit.addEventListener('click', onSubmit);
+                    input.addEventListener('keydown', onKey);
+                });
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+    
+    return res;
+};
 
 // Register global lifecycle cleanup listeners exactly once
 if (!window.__devshell_lifecycle_registered) {
@@ -3660,6 +3726,7 @@ function bindEvents() {
 
     // Lock Features
     const btnLock = document.getElementById('btn-lock');
+    const btnMasterLock = document.getElementById('btn-master-lock');
     const lockOverlay = document.getElementById('lock-modal-overlay');
 
     function openLockModal(targetPath, isLocked) {
@@ -3689,8 +3756,7 @@ function bindEvents() {
     if (btnLock && lockOverlay) {
         btnLock.addEventListener('click', () => {
             if (!state.activeScript) return;
-
-            // Check if it's already locked from state
+            
             let isLocked = false;
             for (let cat in state.scripts) {
                 let sc = state.scripts[cat].find(s => s.relative_path === state.activeScript);

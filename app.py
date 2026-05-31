@@ -2392,12 +2392,27 @@ def enforce_security():
             if any(b in user_agent for b in ['Mozilla', 'Chrome', 'Safari', 'Edge']):
                 abort(403)
 
+    # 3. Master Auth Validation
+    if request.path.startswith("/api/") and request.path != "/api/master/status":
+        locks = load_locks()
+        if "__master__" in locks:
+            master_pass = request.headers.get("X-Master-Password", "")
+            if not check_lock("__master__", master_pass):
+                return jsonify({"error": "Master locked", "master_locked": True}), 401
+
 # ─── Routes ───────────────────────────────────────────────────────
 
 
 @app.route("/")
 def index():
     return send_from_directory("ui", "index.html")
+
+
+@app.route("/api/master/status")
+def master_status():
+    locks = load_locks()
+    is_locked = "__master__" in locks
+    return jsonify({"locked": is_locked})
 
 
 @app.route("/api/scripts")
