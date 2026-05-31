@@ -162,10 +162,12 @@ function createWindow(port) {
     });
 
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (url.startsWith(baseUrl) || !url.startsWith('http')) {
+        if (url.startsWith(baseUrl)) {
             return { action: 'allow' };
         }
-        require('electron').shell.openExternal(url);
+        if (url.startsWith('http')) {
+            require('electron').shell.openExternal(url);
+        }
         return { action: 'deny' };
     });
 

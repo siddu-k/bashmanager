@@ -1826,7 +1826,7 @@ async function executePR(relPath, branch, message, repoUrl) {
                     `Successfully pushed to branch '${data.branch}'.\n\nWould you like to open the Pull Request page on GitHub?`
                 )
             ) {
-                window.open(data.pr_url, '_blank');
+                window.open(data.pr_url, '_blank', 'noopener,noreferrer');
             }
         } else {
             if (typeof DebuggerConsole !== 'undefined') {
@@ -2821,9 +2821,10 @@ function renderSidebar() {
         totalScripts += filteredScripts.length;
         const isExpanded = state.expandedCategories.has(cat) || !!query;
 
+        const escapedCat = escapeAttr(cat);
         html += `
             <div class="category">
-                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
+                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${escapedCat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${escapedCat}'))">
                     <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                     </span>
@@ -2835,17 +2836,18 @@ function renderSidebar() {
                     ${filteredScripts.map(s => {
             let lockIcon = s.locked ? `<span class="script-item-icon" style="color: var(--accent-orange); margin-right: 4px;">${ICONS.lock}</span>` : '';
             const displayName = ((s.name || '') + '').trim() || s.file || (s.relative_path || '').split('/').pop() || '';
+            const escapedPath = escapeAttr(s.relative_path);
 
             return `
                         <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                            onclick="selectScript('${s.relative_path}')"
-                            onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
+                            onclick="selectScript('${escapedPath}')"
+                            onkeydown="handleKeyboardAction(event, () => selectScript('${escapedPath}'))"
                             title="${escapeAttr(s.desc)}">
                             ${lockIcon}
                             <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
                             <span class="script-item-name">${escapeHtml(displayName)}</span>
                             <span class="script-item-fav ${s.favorite ? 'visible' : ''}"
-                                  onclick="event.stopPropagation(); toggleFavorite('${s.relative_path}')">
+                                  onclick="event.stopPropagation(); toggleFavorite('${escapedPath}')">
                                 ${ICONS.favorite}
                             </span>
                         </li>
@@ -2884,10 +2886,11 @@ function renderSidebar() {
         favsSection.style.display = '';
         favsList.innerHTML = favScripts.map(s => {
             const displayName = ((s.name || '') + '').trim() || s.file || (s.relative_path || '').split('/').pop() || '';
+            const escapedPath = escapeAttr(s.relative_path);
             return `
             <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                onclick="selectScript('${s.relative_path}')"
-                onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))">
+                onclick="selectScript('${escapedPath}')"
+                onkeydown="handleKeyboardAction(event, () => selectScript('${escapedPath}'))">
                 <span class="script-item-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
                 <span class="script-item-name">${escapeHtml(displayName)}</span>
             </li>
@@ -3712,7 +3715,7 @@ function escapeHtml(text) {
 }
 
 function escapeAttr(text) {
-    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function removeNotification(notification) {
