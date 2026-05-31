@@ -188,6 +188,14 @@ function startFlaskServer(port) {
         }
     });
 
+    flaskProcess.on('error', (err) => {
+        showStartupError(
+            'DevShell failed to start',
+            `Failed to launch Python backend: ${err.message}. Make sure Python is installed and available as "${pythonCmd}".`
+        );
+        app.quit();
+    });
+
     flaskProcess.stdout.on('data', (data) => {
         console.log(`Flask: ${data}`);
     });
