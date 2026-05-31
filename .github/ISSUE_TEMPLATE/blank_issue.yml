@@ -10,6 +10,7 @@ body:
       label: Describe the issue
       description: Provide any details, logs, or context.
       placeholder: Leave a comment
+    validations:
       required: true
 
   - type: textarea

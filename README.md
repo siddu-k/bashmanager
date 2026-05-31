@@ -39,6 +39,89 @@ To protect locked scripts from unauthorized access, DevShell uses a secure passw
 - Node.js 18+ and npm (For the Electron wrapper)
 - A shell available in system PATH — bash (Linux/macOS), Git Bash, or WSL on Windows. On Windows, cmd.exe is used as fallback if no bash is found.
 
+## ⚡ Quick Start (5 Minutes)
+
+Get DevShell running quickly with the minimum required setup.
+
+### 1. Clone the Repository
+
+```bash
+git clone <repository_url>
+cd bashmanager
+```
+
+### 2. Install Dependencies
+
+Install backend dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Install frontend/Electron dependencies:
+
+```bash
+npm install
+```
+
+### 3. Run DevShell
+
+#### Recommended: Desktop Mode (Electron)
+
+Launch the full desktop interface:
+
+```bash
+npm start
+```
+
+#### Alternative: Web Mode (Browser)
+
+Run the Flask backend locally:
+
+```bash
+python app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000
+```
+
+### ✅ Expected Result
+
+You should see the DevShell interface launch and be able to:
+
+* Browse local scripts
+* Execute commands/scripts
+* View terminal output
+* Manage script execution locally
+
+### 🛠 Common Setup Issues
+
+**Python not found**
+
+Ensure Python 3.8+ is installed and available in system PATH.
+
+**npm not found**
+
+Install Node.js 18+ and verify:
+
+```bash
+node -v
+npm -v
+```
+
+**Port 5000 already in use**
+
+Use a different port:
+
+```bash
+DEVSHELL_PORT=5001 python app.py
+```
+
+or start Desktop Mode (`npm start`) which can automatically select a free port.
+
 ## Installation
 
 ### 1. Clone the Repository
@@ -124,6 +207,9 @@ Contributions from the open-source community are welcome. Please adhere to the f
 2. **Vanilla Frontend System:** Core UI features should be implemented in Vanilla JS/CSS without reliance on build steps (e.g., React, Vue, Tailwind).
 3. **Cross-Platform Compatibility:** Ensure OS subprocess invocations account for both Windows architectures (via Git Bash/WSL/cmd) and native POSIX Linux systems. Avoid hardcoding OS-specific file paths.
 4. **Code Formatting:** Adhere strictly to PEP-8 for Python components and standard modern JS styling.
+
+> GitHub Actions automatically runs ShellCheck on all `.sh` files to ensure shell script quality and consistency.
+
 
 ### Submission Process
 

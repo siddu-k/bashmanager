@@ -2924,6 +2924,49 @@ body.debugger-open #app-main {
     font-size: 13px;
     color: var(--text-secondary);
     opacity: 0.8;
+}/* ─── HEADER DIGITAL SYSTEM CLOCK (#114) ─── */
+#header-clock {
+    font-family: var(--font-mono, monospace);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted, #8b949e);
+    background-color: var(--bg-secondary, #161b22);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #30363d);
+    margin-left: 14px;
+    display: inline-flex;
+    align-items: center;
+    letter-spacing: 0.05em;
+    height: 22px; /* Keeps layout perfectly centered alongside version badges */
+}
+
+/* Muted light theme adaptions for the system clock */
+body.light-theme #header-clock {
+    color: #57606a !important;
+    background-color: #f6f8fa !important;
+    border-color: #d0d7de !important;
+}
+/* ─── HISTORY MODAL LIVE SEARCH FILTER TREATMENT (#115) ─── */
+#history-modal-search {
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+#history-modal-search:focus {
+    outline: none;
+    border-color: var(--accent, #3b82f6) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+/* Light theme overrides for history filter modules */
+body.light-theme #history-modal-search {
+    background: #ffffff !important;
+    border-color: #ced4da !important;
+    color: #212529 !important;
+}
+body.light-theme #history-modal-search:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 /* ─── LIGHT THEME OVERRIDES ─── */
 body.light-theme {
