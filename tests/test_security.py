@@ -137,7 +137,6 @@ def test_backward_compatibility_migration(app_module, tmp_path):
         # Verify incorrect password fails
         assert app_module.check_lock(rel_path, "wrong_pwd") is False
 
-
 def test_migration_save_safety(app_module, tmp_path):
     locks_file = tmp_path / "locks.json"
     rel_path = "category/script.sh"
@@ -151,3 +150,4 @@ def test_migration_save_safety(app_module, tmp_path):
         with patch.object(app_module, "save_locks", side_effect=Exception("Disk full")):
             # check_lock should still verify password and return True
             assert app_module.check_lock(rel_path, password) is True
+

@@ -372,6 +372,146 @@ body {
     align-items: center;
     justify-content: space-between;
     border-bottom: 1px solid var(--border);
+    position: relative;
+}
+
+/* Predefined Dev & DevOps Tools Dropdown styling */
+.tools-dropdown-menu {
+    position: absolute;
+    top: 48px;
+    left: 20px;
+    width: 220px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    padding: 6px 0;
+    display: none;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.tools-dropdown-menu.active {
+    display: block;
+    animation: dropdownFade 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes dropdownFade {
+    from {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.tools-dropdown-menu .dropdown-header {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    padding: 8px 14px 4px;
+    user-select: none;
+}
+
+.tools-dropdown-menu .dropdown-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    transition: var(--transition-fast);
+    cursor: pointer;
+    user-select: none;
+}
+
+.tools-dropdown-menu .dropdown-item svg {
+    color: var(--text-muted);
+    transition: var(--transition-fast);
+}
+
+.tools-dropdown-menu .dropdown-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.tools-dropdown-menu .dropdown-item:hover svg {
+    color: var(--accent);
+    transform: scale(1.08);
+}
+
+.tools-dropdown-menu .dropdown-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 6px 0;
+}
+
+/* Header Predefined Dev & DevOps Tools Dropdown styling */
+.header-tools-dropdown {
+    position: absolute;
+    top: 50px;
+    right: 70px;
+    width: 230px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-bright);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6);
+    z-index: 1000;
+    padding: 6px 0;
+    display: none;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.header-tools-dropdown.active {
+    display: block;
+    animation: dropdownFade 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.header-tools-dropdown .dropdown-header {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    padding: 8px 14px 4px;
+    user-select: none;
+}
+
+.header-tools-dropdown .dropdown-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 14px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    transition: var(--transition-fast);
+    cursor: pointer;
+    user-select: none;
+}
+
+.header-tools-dropdown .dropdown-item svg {
+    color: var(--text-muted);
+    transition: var(--transition-fast);
+}
+
+.header-tools-dropdown .dropdown-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.header-tools-dropdown .dropdown-item:hover svg {
+    color: var(--accent);
+    transform: scale(1.08);
+}
+
+.header-tools-dropdown .dropdown-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 6px 0;
 }
 
 .sidebar-title {
@@ -1271,6 +1411,15 @@ body {
     overflow-y: auto;
     max-height: 52vh;
     padding-right: 4px;
+}
+
+.history-load-more {
+    width: 100%;
+    justify-content: center;
+    padding: 10px 16px;
+    margin-top: 4px;
+    font-size: 13px;
+    cursor: pointer;
 }
 
 .history-entry {
@@ -2915,6 +3064,49 @@ body.debugger-open #app-main {
     font-size: 13px;
     color: var(--text-secondary);
     opacity: 0.8;
+}/* ─── HEADER DIGITAL SYSTEM CLOCK (#114) ─── */
+#header-clock {
+    font-family: var(--font-mono, monospace);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-muted, #8b949e);
+    background-color: var(--bg-secondary, #161b22);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #30363d);
+    margin-left: 14px;
+    display: inline-flex;
+    align-items: center;
+    letter-spacing: 0.05em;
+    height: 22px; /* Keeps layout perfectly centered alongside version badges */
+}
+
+/* Muted light theme adaptions for the system clock */
+body.light-theme #header-clock {
+    color: #57606a !important;
+    background-color: #f6f8fa !important;
+    border-color: #d0d7de !important;
+}
+/* ─── HISTORY MODAL LIVE SEARCH FILTER TREATMENT (#115) ─── */
+#history-modal-search {
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+#history-modal-search:focus {
+    outline: none;
+    border-color: var(--accent, #3b82f6) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+/* Light theme overrides for history filter modules */
+body.light-theme #history-modal-search {
+    background: #ffffff !important;
+    border-color: #ced4da !important;
+    color: #212529 !important;
+}
+body.light-theme #history-modal-search:focus {
+    border-color: #3b82f6 !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
 }
 /* ─── LIGHT THEME OVERRIDES ─── */
 body.light-theme {

@@ -1,90 +1,67 @@
-from pathlib import Path
+import os
 import re
-import urllib.parse
+from pathlib import Path
 
-
-def validate_safe_path(base_dir: str, rel_path: str) -> Path:
+def validate_safe_path(base_dir, rel_path):
     """
-    Validates that a resolved path is within the base directory.
-    Uses Path.relative_to() to prevent path traversal attacks.
+    Validate that rel_path is safe and resolves to a path inside base_dir.
+    Raises ValueError if path traversal or unsafe access is detected.
     """
-    base = Path(base_dir).resolve()
-    target = (base / rel_path).resolve()
+    if not rel_path:
+        raise ValueError("Path cannot be empty")
+        
+    base_path = Path(base_dir).resolve()
+    # Join and resolve path
+    target_path = Path(os.path.join(base_dir, rel_path)).resolve()
+    
+    # Check that target_path is inside base_path
+    if not str(target_path).startswith(str(base_path)):
+        raise ValueError("Invalid path: Path traversal detected")
+        
+    return target_path
 
-    try:
-        target.relative_to(base)
-    except ValueError:
-        raise ValueError("Invalid path: traversal attempt detected")
-
-    return target
-
-
-def validate_git_branch(branch_name: str) -> str:
+def validate_git_branch(branch_name):
     """
-    Validates a Git branch name according to strict security rules.
-    Prevents argument injection and invalid references.
+    Validate git branch name rules to prevent command injection and ensure git compatibility.
+    Raises ValueError if branch name is invalid.
     """
     if not branch_name:
         raise ValueError("Branch name cannot be empty")
-
-    # Basic strict character set validation
-    if not re.match(r"^[a-zA-Z0-9._/-]+$", branch_name):
-        raise ValueError("Invalid characters in branch name")
-
-    # Prevent argument injection
-    if branch_name.startswith("-") or branch_name.startswith("--"):
-        raise ValueError("Branch name cannot start with '-' or '--'")
-
-    # Git ref specific validation rules
-    invalid_patterns = [
-        "..",
-        "@{",
-        "//",
-    ]
-    for pattern in invalid_patterns:
-        if pattern in branch_name:
-            raise ValueError(f"Branch name contains invalid pattern: {pattern}")
-
-    if branch_name.endswith(".") or branch_name.endswith("/"):
-        raise ValueError("Branch name cannot end with '.' or '/'")
-
-    # The regex already prevents spaces, but this is an extra sanity check
-    if " " in branch_name:
-        raise ValueError("Branch name cannot contain spaces")
-
+        
+    # Git branch name security rules
+    if branch_name.startswith('-'):
+        raise ValueError(f"Invalid branch name: cannot start with dash")
+        
+    # Only allow safe characters: alphanumeric, dashes, underscores, slashes, dots
+    if not re.match(r'^[a-zA-Z0-9._/-]+$', branch_name):
+        raise ValueError(f"Invalid branch name: {branch_name}")
+        
+    if '..' in branch_name:
+        raise ValueError("Invalid branch name: cannot contain '..'")
+        
+    if branch_name.endswith('.lock'):
+        raise ValueError("Invalid branch name: cannot end with '.lock'")
+        
+    if branch_name.endswith('/'):
+        raise ValueError("Invalid branch name: cannot end with '/'")
+        
     return branch_name
 
-
-def validate_repo_name(repo_url: str) -> str:
+def validate_repo_name(repo_name):
     """
-    Validates a repository URL to ensure it is a safe GitHub URL.
-    Only allows GitHub HTTPS or SSH formats.
+    Validate repository name/URL to ensure safe git push commands.
+    Raises ValueError if repository name/URL contains invalid/unsafe characters.
     """
-    if not repo_url:
-        raise ValueError("Repository URL cannot be empty")
-
-    # Check for valid SSH format: git@github.com:user/repo.git
-    if repo_url.startswith("git@github.com:"):
-        # Additional sanity checks on SSH format
-        if " " in repo_url or ";" in repo_url or "&" in repo_url:
-            raise ValueError("Invalid characters in SSH repository URL")
-        return repo_url
-
-    # Check for HTTPS format
-    try:
-        parsed = urllib.parse.urlparse(repo_url)
-    except Exception:
-        raise ValueError("Invalid repository URL format")
-
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(
-            f"Invalid URL scheme '{parsed.scheme}'. Only HTTPS is allowed."
-        )
-
-    if parsed.netloc not in ("github.com", "www.github.com"):
-        raise ValueError("Only GitHub URLs are allowed")
-
-    if " " in repo_url or ";" in repo_url or "&" in repo_url:
-        raise ValueError("Invalid characters in repository URL")
-
-    return repo_url
+    if not repo_name:
+        raise ValueError("Repository name/URL cannot be empty")
+        
+    repo_name = repo_name.strip()
+    
+    if repo_name.startswith('-'):
+        raise ValueError("Invalid repository URL/name: cannot start with dash")
+        
+    # Allow safe URL and remote name characters (alphanumeric, colons, slashes, dots, dashes, underscores, @, +)
+    if not re.match(r'^[a-zA-Z0-9._/:-@+]+$', repo_name):
+        raise ValueError(f"Invalid repository URL/name: {repo_name}")
+        
+    return repo_name
