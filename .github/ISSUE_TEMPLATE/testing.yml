@@ -1,6 +1,6 @@
 name: Testing
 description: Report a failing test, request test coverage improvements, or share test results.
-title: "[TESTING] {{short_description}}"
+title: "[TESTING] <description>"
 labels:
   - testing
 
@@ -11,6 +11,7 @@ body:
       label: Short description
       description: Brief summary (one line)
       placeholder: Brief summary (one line)
+    validations:
       required: true
 
   - type: textarea
@@ -19,6 +20,7 @@ body:
       label: Describe the issue
       description: Explain the failing test, coverage gap, or test-related problem.
       placeholder: Describe the issue here
+    validations:
       required: true
 
   - type: textarea

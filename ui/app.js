@@ -13,6 +13,7 @@ const API = {
     delete: '/api/scripts/delete',
     favorite: '/api/scripts/favorite',
     exec: '/api/exec',
+    exec_check_lock: '/api/exec/check_lock',
     lock: '/api/scripts/lock',
     import_github: '/api/scripts/import_github',
     pr: '/api/git/pr',
@@ -463,7 +464,7 @@ function renderReliabilityEmpty(message = 'No data available.', variant = 'empty
 function setReliabilityPanelContent(element, html, emptyMessage, variant = 'empty') {
     if (!element) return;
     element.innerHTML = (html && html.trim())
-        ? html
+        ? safeHTML(html)
         : renderReliabilityEmpty(emptyMessage, variant);
 }
 
@@ -1142,6 +1143,50 @@ async function abortScriptRun(termId = state.activeTerminalId) {
 }
 
 async function runScript(relPath) {
+    // Show arguments modal before running the script
+    showArgumentsModal(relPath);
+}
+
+function showArgumentsModal(relPath) {
+    const overlay = document.getElementById('arguments-modal-overlay');
+    const input = document.getElementById('arguments-input');
+    const preview = document.getElementById('arguments-preview');
+    const previewList = document.getElementById('arguments-preview-list');
+    
+    // Store script path in overlay for retrieval in run handler
+    overlay._scriptPath = relPath;
+    
+    input.value = '';
+    preview.style.display = 'none';
+    previewList.innerHTML = '';
+    
+    // Setup input change listener for preview
+    input.onchange = input.oninput = () => {
+        const text = input.value.trim();
+        if (!text) {
+            preview.style.display = 'none';
+            return;
+        }
+        
+        const args = text.split('\n').filter(line => line.trim()).map(line => line.trim());
+        previewList.innerHTML = args.map((arg, idx) => `<div style="margin: 4px 0;"><strong>[${idx}]:</strong> <code>${escapeHtml(arg)}</code></div>`).join('');
+        preview.style.display = '';
+    };
+    
+    overlay.classList.add('active');
+}
+
+function closeArgumentsModal() {
+    const overlay = document.getElementById('arguments-modal-overlay');
+    overlay.classList.remove('active');
+}
+
+async function executeScriptWithArguments(relPath, argumentsText) {
+    closeArgumentsModal();
+    
+    // Parse arguments from textarea
+    const arguments_list = argumentsText.trim().split('\n').filter(line => line.trim()).map(line => line.trim());
+    
     const termId = state.activeTerminalId;
     if (state.runningScripts[termId]) return;
     const runStatus = document.getElementById('run-status');
@@ -1153,6 +1198,7 @@ async function runScript(relPath) {
     state.runningScripts[termId] = {
         run_id: null,
         relPath,
+        arguments: arguments_list,
         abortRequested: false,
         aborting: false,
         killSent: false,
@@ -1170,7 +1216,7 @@ async function runScript(relPath) {
         resourcePanel.style.display = 'none';
     }
 
-    appendToCli(`$ Running script: ${relPath}`, 'system', termId);
+    appendToCli(`$ Running script: ${relPath}` + (arguments_list.length > 0 ? ` [with ${arguments_list.length} argument(s)]` : ''), 'system', termId);
     if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('info', `▶ Running script: ${relPath}`, 'script');
 
     if (termId === state.activeTerminalId) {
@@ -1182,7 +1228,7 @@ async function runScript(relPath) {
         const res = await fetch(API.run, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath) }),
+            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath), arguments: arguments_list }),
             signal: controller.signal
         });
 
@@ -1196,7 +1242,16 @@ async function runScript(relPath) {
             cleanupRunningScript(termId);
             return;
         }
-
+        if (res.status === 404) {
+            appendToCli('Error: Script file not found. It may have been deleted or moved.', 'error', termId);
+            if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('error', 'Script file not found — it may have been deleted or moved', 'script');
+            if (termId === state.activeTerminalId) {
+                runStatus.textContent = 'Not Found';
+                runStatus.className = 'run-status error';
+            }
+            cleanupRunningScript(termId);
+            return;
+        }
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(data.error || `Script run failed with HTTP ${res.status}`);
@@ -1389,8 +1444,29 @@ async function execCommand(cmd) {
         const res = await fetch(API.exec, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: cmd }),
+            body: JSON.stringify({ 
+                command: cmd,
+                password: getUnlockPassword('__terminal__')
+            }),
         });
+
+        if (res.status === 401) {
+            const pwd = window.prompt('Terminal is locked. Please enter the terminal password:');
+            if (pwd !== null) {
+                markScriptUnlocked('__terminal__', pwd);
+                // Re-run without duplicating history
+                state.cmdHistory.pop();
+                state.cmdHistoryIndex--;
+                const cliBody = getTerminalBody(termId);
+                if (cliBody && cliBody.lastElementChild) {
+                    cliBody.removeChild(cliBody.lastElementChild); // Remove '$ cmd'
+                }
+                execCommand(cmd);
+            } else {
+                appendToCli('Error: Terminal is locked.', 'error', termId);
+            }
+            return;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1487,7 +1563,7 @@ function renderHistoryPage() {
     const visibleEntries = entries.slice(0, visibleCount);
     const hasMore = visibleCount < entries.length;
 
-    list.innerHTML = visibleEntries.map(entry => {
+    list.innerHTML = safeHTML(visibleEntries.map(entry => {
         const statusClass = entry.status === 'failed' ? 'failed' : 'success';
         const kindLabel = entry.kind === 'script' ? 'Script' : 'Command';
         const duration = formatHistoryDuration(entry);
@@ -1523,7 +1599,7 @@ function renderHistoryPage() {
                 <div class="history-entry-excerpt">${excerpt}</div>
             </article>
         `;
-    }).join('');
+    }).join(''));
 
     if (hasMore) {
         const loadMore = document.createElement('button');
@@ -2889,7 +2965,7 @@ function renderSidebar() {
         const isExpanded = state.expandedCategories.has(cat) || !!query;
 
         html += `
-            <div class="category">
+            <div class="category-section" data-category="${cat}">
                 <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
                     <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
@@ -2907,7 +2983,11 @@ function renderSidebar() {
                         <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
                             onclick="selectScript('${s.relative_path}')"
                             onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
-                            title="${escapeAttr(s.desc)}">
+                            title="${escapeAttr(s.desc)}"
+                            data-file="${escapeAttr(s.file)}"
+                            data-path="${escapeAttr(s.relative_path)}"
+                            data-tag="${escapeAttr(s.tag || '')}"
+                            data-desc="${escapeAttr(s.desc || '')}">
                             ${lockIcon}
                             <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
                             <span class="script-item-name">${escapeHtml(displayName)}</span>
@@ -2930,7 +3010,7 @@ function renderSidebar() {
     const rootArrowClass = rootExpanded ? 'expanded' : '';
     const rootChildrenHtml = html || '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">No scripts found. Create one to get started.</div>';
 
-    tree.innerHTML = `
+    tree.innerHTML = safeHTML(`
         <div class="root-folder">
             <div class="category-header root-header" role="button" tabindex="0" aria-expanded="${rootExpanded}" onclick="toggleRoot()" onkeydown="handleKeyboardAction(event, () => toggleRoot())">
                 <span class="category-arrow ${rootArrowClass}">
@@ -2944,12 +3024,12 @@ function renderSidebar() {
                 ${rootChildrenHtml}
             </div>
         </div>
-    `;
+    `);
     countEl.textContent = totalScripts;
 
     if (favScripts.length > 0) {
         favsSection.style.display = '';
-        favsList.innerHTML = favScripts.map(s => {
+        favsList.innerHTML = safeHTML(favScripts.map(s => {
             const displayName = ((s.name || '') + '').trim() || s.file || (s.relative_path || '').split('/').pop() || '';
             return `
             <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
@@ -2958,7 +3038,7 @@ function renderSidebar() {
                 <span class="script-item-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
                 <span class="script-item-name">${escapeHtml(displayName)}</span>
             </li>
-        `}).join('');
+        `}).join(''));
     } else {
         favsSection.style.display = 'none';
     }
@@ -3188,6 +3268,51 @@ function bindEvents() {
     if (cliSearchInput) {
         cliSearchInput.addEventListener('input', () => highlightTerminalSearch());
     }
+
+    const historyModalSearch = document.getElementById('history-modal-search');
+    if (historyModalSearch) {
+        let historyFilterDebounceTimer;
+        historyModalSearch.addEventListener('input', (e) => {
+            clearTimeout(historyFilterDebounceTimer);
+            historyFilterDebounceTimer = setTimeout(() => {
+                const searchCriteriaText = e.target.value.toLowerCase().trim();
+                const historicalItemCards = document.querySelectorAll(
+                    '#history-modal-overlay .analytics-item, ' +
+                    '#history-modal-overlay .replay-line, ' +
+                    '#history-modal-overlay table tbody tr, ' +
+                    '#history-modal-overlay .history-item'
+                );
+                
+                historicalItemCards.forEach(cardRow => {
+                    const contentPayloadString = cardRow.textContent.toLowerCase();
+                    if (contentPayloadString.includes(searchCriteriaText)) {
+                        cardRow.style.display = ''; 
+                    } else {
+                        cardRow.style.display = 'none'; 
+                    }
+                });
+            }, 150);
+        });
+    }
+
+    // ─── TERMINAL FLOATING QUICK-SCROLL ACTIONS (#116) ───
+    const terminalBodyContainer = document.getElementById('terminal-body');
+    const scrollUpTriggerBtn = document.getElementById('scroll-to-top-btn');
+    const scrollDownTriggerBtn = document.getElementById('scroll-to-bottom-btn');
+
+    if (terminalBodyContainer) {
+        if (scrollUpTriggerBtn) {
+            scrollUpTriggerBtn.addEventListener('click', () => {
+                terminalBodyContainer.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+        }
+        if (scrollDownTriggerBtn) {
+            scrollDownTriggerBtn.addEventListener('click', () => {
+                terminalBodyContainer.scrollTo({ top: terminalBodyContainer.scrollHeight, behavior: 'smooth' });
+            });
+        }
+    }
+
     function scoreMatch(query, candidate) {
         const normalizedQuery = String(query || '').toLowerCase();
         const normalizedCandidate = String(candidate || '').toLowerCase();
@@ -3214,89 +3339,63 @@ function bindEvents() {
         return queryIndex === normalizedQuery.length;
     }
 
-    // Real-Time Sidebar Script Filter Logic (Fixed Variant)
+    // Real-Time Sidebar Script Filter Logic
     const scriptSearchBar = document.getElementById('script-search-bar');
     if (scriptSearchBar) {
         scriptSearchBar.addEventListener('input', (e) => {
             const filterText = e.target.value.toLowerCase().trim();
-            const categoryLists = document.querySelectorAll('#category-tree .script-list');
-            const categoryContainers = Array.from(document.querySelectorAll('#category-tree > .category-header'));
+            const scriptItems = document.querySelectorAll('#category-tree .script-item');
 
-            if (filterText === '') {
-                const scriptItems = document.querySelectorAll('#category-tree .script-item');
-                scriptItems.forEach(item => {
-                    item.style.display = 'flex';
-                    item.removeAttribute('data-score');
-                });
-
-                categoryLists.forEach(list => {
-                    list.style.maxHeight = '';
-                });
-
-                categoryContainers.forEach(container => {
-                    container.style.display = '';
-                });
-
-                return;
-            }
-
-            const scriptItems = Array.from(document.querySelectorAll('#category-tree .script-item'));
-            const visibleByParent = new Map();
-            const bestScoreByParent = new Map();
-
+            // 1. Match item against five fields
             scriptItems.forEach(item => {
                 const scriptNameEl = item.querySelector('.script-item-name');
                 if (!scriptNameEl) return;
 
-                const scriptName = scriptNameEl.textContent.toLowerCase();
+                const name = scriptNameEl.textContent.toLowerCase();
+                const filename = (item.getAttribute('data-file') || '').toLowerCase();
+                const path = (item.getAttribute('data-path') || '').toLowerCase();
+                const tag = (item.getAttribute('data-tag') || '').toLowerCase();
+                const desc = (item.getAttribute('data-desc') || '').toLowerCase();
 
-                if (!fuzzyMatch(filterText, scriptName)) {
+                if (
+                    name.includes(filterText) ||
+                    filename.includes(filterText) ||
+                    path.includes(filterText) ||
+                    tag.includes(filterText) ||
+                    desc.includes(filterText)
+                ) {
+                    item.style.display = 'flex';
+                } else {
                     item.style.display = 'none';
-                    item.removeAttribute('data-score');
-                    return;
                 }
+            });
 
-                const score = scoreMatch(filterText, scriptName);
-                item.dataset.score = String(score);
-                item.style.display = 'flex';
-
-                const parent = item.parentElement;
-                if (!visibleByParent.has(parent)) {
-                    visibleByParent.set(parent, []);
+            // 2. Hide/show category wrappers (.category-section) based on visibility of their script items
+            const categorySections = document.querySelectorAll('#category-tree .category-section');
+            categorySections.forEach(section => {
+                const items = section.querySelectorAll('.script-item');
+                let hasVisible = false;
+                items.forEach(item => {
+                    if (item.style.display !== 'none') {
+                        hasVisible = true;
+                    }
+                });
+                if (hasVisible || filterText === '') {
+                    section.style.display = '';
+                } else {
+                    section.style.display = 'none';
                 }
-                visibleByParent.get(parent).push(item);
-                bestScoreByParent.set(parent, Math.max(bestScoreByParent.get(parent) ?? -1, score));
             });
-
-            visibleByParent.forEach((items, parent) => {
-                items.sort((a, b) => Number(b.dataset.score || 0) - Number(a.dataset.score || 0));
-                items.forEach(item => parent.appendChild(item));
-            });
-
-            categoryContainers.forEach(container => {
-                const list = container.querySelector('.script-list');
-                const hasVisibleItems = list && visibleByParent.has(list);
-                container.style.display = hasVisibleItems ? '' : 'none';
-            });
-
-            const rankedCategories = categoryContainers
-                .map(container => {
-                    const list = container.querySelector('.script-list');
-                    return {
-                        container,
-                        score: list ? (bestScoreByParent.get(list) ?? -1) : -1
-                    };
-                })
-                .filter(entry => entry.score >= 0)
-                .sort((a, b) => b.score - a.score);
-
-            const tree = document.getElementById('category-tree');
-            rankedCategories.forEach(({ container }) => tree.appendChild(container));
 
             // Handle category auto-expansion smoothly without resetting terminal CSS
+            const categoryLists = document.querySelectorAll('#category-tree .script-list');
             categoryLists.forEach(list => {
-                list.style.maxHeight = 'none';
-                list.classList.remove('collapsed');
+                if (filterText !== '') {
+                    list.style.maxHeight = 'none';
+                    list.classList.remove('collapsed');
+                } else {
+                    list.style.maxHeight = '';
+                }
             });
         });
     }
@@ -3332,7 +3431,6 @@ function bindEvents() {
             }
         });
     }
-    
 
     // Terminal Tabs
     const btnAddTab = document.getElementById('btn-add-tab');
@@ -3532,6 +3630,30 @@ function bindEvents() {
     document.getElementById('modal-cancel').addEventListener('click', closeModal);
     document.getElementById('modal-overlay').addEventListener('click', (e) => { if (e.target.id === 'modal-overlay') closeModal(); });
 
+    // Arguments Modal setup
+    const argumentsOverlay = document.getElementById('arguments-modal-overlay');
+    if (argumentsOverlay) {
+        const closeArguments = () => closeArgumentsModal();
+        const runArguments = () => {
+            const input = document.getElementById('arguments-input');
+            const relPath = argumentsOverlay._scriptPath; // Store script path in overlay element
+            executeScriptWithArguments(relPath, input.value);
+        };
+        
+        document.getElementById('arguments-modal-close').addEventListener('click', closeArguments);
+        document.getElementById('arguments-modal-cancel').addEventListener('click', closeArguments);
+        document.getElementById('arguments-modal-run').addEventListener('click', runArguments);
+        argumentsOverlay.addEventListener('click', (e) => { if (e.target.id === 'arguments-modal-overlay') closeArguments(); });
+        
+        // Allow Enter key to run in arguments textarea (Ctrl+Enter or similar)
+        document.getElementById('arguments-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                runArguments();
+            }
+        });
+    }
+
+
     document.getElementById('modal-save').addEventListener('click', () => {
         const category = document.getElementById('modal-category').value.trim();
         const filename = document.getElementById('modal-filename').value.trim();
@@ -3569,10 +3691,6 @@ function bindEvents() {
         githubOverlay.addEventListener('click', (e) => { if (e.target.id === 'github-modal-overlay') closeGithub(); });
 
         document.getElementById('github-modal-import').addEventListener('click', () => {
-            const url = document.getElementById('github-url').value;
-            const category = document.getElementById('github-category').value;
-            const filename = document.getElementById('github-filename').value;
-
             if (!url || !category || !filename) {
                 return notify('All GitHub import fields are required.', 'warning');
             }
@@ -3618,12 +3736,12 @@ function bindEvents() {
         const newPassGroup = document.getElementById('lock-new-pass').parentElement;
 
         if (isLocked) {
-            modalHeader.textContent = targetPath === '__master__' ? 'Remove Master Lock' : 'Remove Script Lock';
+            modalHeader.textContent = targetPath === '__terminal__' ? 'Remove Terminal Lock' : 'Remove Script Lock';
             currentPassGroup.style.display = 'flex';
             currentPassGroup.querySelector('label').textContent = 'Enter Password to Remove Lock';
             newPassGroup.style.display = 'none';
         } else {
-            modalHeader.textContent = targetPath === '__master__' ? 'Set Master Lock' : 'Lock Script';
+            modalHeader.textContent = targetPath === '__terminal__' ? 'Lock Terminal' : 'Lock Script';
             currentPassGroup.style.display = 'none';
             newPassGroup.style.display = 'flex';
             newPassGroup.querySelector('label').textContent = 'Set Password';
@@ -3633,18 +3751,6 @@ function bindEvents() {
         document.getElementById('lock-new-pass').value = '';
 
         lockOverlay.classList.add('active');
-    }
-
-    if (btnMasterLock && lockOverlay) {
-        btnMasterLock.addEventListener('click', async () => {
-            try {
-                const res = await originalFetch(API.master_status);
-                const data = await res.json();
-                openLockModal('__master__', data.locked);
-            } catch (err) {
-                console.error('Failed to check master lock status', err);
-            }
-        });
     }
 
     if (btnLock && lockOverlay) {
@@ -3658,6 +3764,20 @@ function bindEvents() {
             }
             openLockModal(state.activeScript, isLocked);
         });
+    }
+
+    const btnLockTerminal = document.getElementById('btn-lock-terminal');
+    if (btnLockTerminal && lockOverlay) {
+        btnLockTerminal.addEventListener('click', async () => {
+            try {
+                const res = await fetch(API.exec_check_lock);
+                const data = await res.json();
+                openLockModal('__terminal__', data.locked);
+            } catch (err) {
+                console.error('Failed to check terminal lock status', err);
+            }
+        });
+    }
 
         const closeLock = () => lockOverlay.classList.remove('active');
         document.getElementById('lock-modal-close').addEventListener('click', closeLock);
@@ -3688,12 +3808,14 @@ function bindEvents() {
             if (!state.lockTarget) return;
 
             let isLocked = false;
-            if (state.lockTarget === '__master__') {
+            if (state.lockTarget === '__terminal__') {
                 try {
-                    const res = await originalFetch(API.master_status);
+                    const res = await fetch(API.exec_check_lock);
                     const data = await res.json();
                     isLocked = data.locked;
-                } catch (e) { console.error(e); }
+                } catch (e) {
+                    console.error(e);
+                }
             } else {
                 for (let cat in state.scripts) {
                     let sc = state.scripts[cat].find(s => s.relative_path === state.lockTarget);
@@ -3713,12 +3835,9 @@ function bindEvents() {
                 }
             }
 
-            // Using originalFetch implicitly by calling manageLock which uses the wrapper... 
-            // Wait, manageLock uses fetch which will inject X-Master-Password. 
-            // This is perfectly fine since state.masterPassword is set during authentication!
             const success = await manageLock(state.lockTarget, oldPass, newPass);
             if (success) {
-                const targetName = state.lockTarget === '__master__' ? 'Master' : 'Script';
+                const targetName = state.lockTarget === '__terminal__' ? 'Terminal' : 'Script';
                 notify(
                     isLocked
                         ? `${targetName} lock removed successfully.`
@@ -3726,8 +3845,9 @@ function bindEvents() {
                     'success'
                 );
                 
-                if (state.lockTarget === '__master__') {
-                    state.masterPassword = newPass || null;
+                if (state.lockTarget === '__terminal__') {
+                    if (newPass) markScriptUnlocked('__terminal__', newPass);
+                    else clearScriptUnlock('__terminal__');
                 } else {
                     if (!isLocked && newPass) {
                         clearScriptUnlock(state.lockTarget);
@@ -3740,7 +3860,6 @@ function bindEvents() {
                 closeLock();
             }
         });
-    }
 
     document.getElementById('btn-reliability')?.addEventListener('click', openReliabilityDashboard);
 
@@ -3816,6 +3935,42 @@ function escapeHtml(text) {
 
 function escapeAttr(text) {
     return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+/**
+ * Sanitize HTML string to prevent XSS attacks.
+ * Uses DOMPurify when available, falls back to aggressive tag stripping.
+ */
+function safeHTML(html) {
+    if (typeof html !== 'string') return '';
+    if (typeof DOMPurify !== 'undefined') {
+        return DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: [
+                'div', 'span', 'p', 'br', 'strong', 'em', 'b', 'i', 'u',
+                'ul', 'ol', 'li', 'pre', 'code', 'article', 'section',
+                'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button', 'label',
+                'input', 'svg', 'path', 'circle', 'ellipse', 'line',
+                'polyline', 'polygon', 'rect', 'g', 'text', 'use', 'defs',
+                'kbd', 'table', 'thead', 'tbody', 'tr', 'td', 'th',
+            ],
+            ALLOWED_ATTR: [
+                'class', 'id', 'style', 'role', 'tabindex', 'title',
+                'aria-label', 'aria-live', 'aria-expanded', 'aria-hidden',
+                'data-id', 'data-log-file', 'data-index', 'data-cmd',
+                'data-type', 'data-session-id',
+                'xmlns', 'viewBox', 'width', 'height', 'fill', 'stroke',
+                'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+                'd', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y',
+                'x1', 'y1', 'x2', 'y2', 'points',
+                'type', 'placeholder', 'value', 'hidden',
+                'onclick', 'onkeydown',
+            ],
+        });
+    }
+    // Fallback: strip all tags except safe ones
+    return html.replace(/<script[\s>][\s\S]*?<\/script>/gi, '')
+               .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
+               .replace(/javascript\s*:/gi, '');
 }
 
 function removeNotification(notification) {
@@ -4078,11 +4233,11 @@ function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = [
         bodyContainer.setAttribute('role', 'log');
         bodyContainer.setAttribute('aria-live', 'polite');
         const snapshot = dataSnapshots?.find(snap => snap.id === id);
-        bodyContainer.innerHTML = snapshot?.content ||
+        bodyContainer.innerHTML = safeHTML(snapshot?.content ||
             `<div class="cli-welcome">
                 <span class="cli-prompt">$</span>
                 <span class="cli-welcome-text">Restored terminal session.</span>
-            </div>`;
+            </div>`);
         cliArea.insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
 
         state.terminals.push(id);
@@ -4162,7 +4317,7 @@ async function openWorkspaceManager() {
         if (!data.profiles.length) {
             container.innerHTML = '<p style="color:var(--text-secondary);margin:0;">No saved profiles yet.</p>';
         } else {
-            container.innerHTML = data.profiles.map(profile => `
+            container.innerHTML = safeHTML(data.profiles.map(profile => `
                 <div class="workspace-profile-item">
                     <span>${escapeHtml(profile)}</span>
                     <div class="workspace-profile-actions">
@@ -4170,7 +4325,7 @@ async function openWorkspaceManager() {
                         <button class="btn" onclick="deleteWorkspaceProfile('${escapeHtml(profile)}')">Delete</button>
                     </div>
                 </div>
-            `).join('');
+            `).join(''));
         }
 
         document
@@ -4714,6 +4869,27 @@ document.addEventListener('keydown', (e) => {
 // Initialize debugger when DOM is ready
 document.addEventListener('DOMContentLoaded', () => { DebuggerConsole.init(); });
 
+// ─── REAL-TIME DIGITAL SYSTEM CLOCK ENGINE (#114) ───
+function startHeaderClock() {
+    const clockElement = document.getElementById('header-clock');
+    if (!clockElement) return;
+
+    const updateClock = () => {
+        const now = new Date();
+        
+        // Pad single digits with leading zeros for consistent HH:MM:SS layouts
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+
+        clockElement.textContent = `${hours}:${minutes}:${seconds}`;
+    };
+
+    // Fire immediately on execution to prevent a 1000ms layout text jump
+    updateClock();
+
+    // Hook up the optimized 1000ms execution loop lifecycle track
+    setInterval(updateClock, 1000);
 // Global page lifecycle listeners for SSE resource cleanup
 if (!window.hasRegisteredLifecycleCleanup) {
     window.hasRegisteredLifecycleCleanup = true;

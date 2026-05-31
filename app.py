@@ -394,7 +394,7 @@ def _format_duration(seconds):
     return f"{minutes}m {remaining:.1f}s"
 
 
-def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=""):
+def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd="", arguments=None):
     _ensure_log_dirs()
     started_at = _utc_now()
     monotonic_start = time.perf_counter()
@@ -404,6 +404,15 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
     log_path = os.path.join(EXECUTION_LOG_DIR, log_name)
     log_handle = open(log_path, "w", encoding="utf-8", newline="\n")
 
+    # Validate and normalize arguments
+    if arguments is None:
+        arguments = []
+    elif not isinstance(arguments, list):
+        arguments = []
+    else:
+        # Ensure all arguments are strings
+        arguments = [str(arg) for arg in arguments if arg is not None]
+
     record = {
         "id": execution_id,
         "kind": kind,
@@ -411,6 +420,7 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
         "command": command_text,
         "shell": shell_cmd,
         "cwd": cwd,
+        "arguments": arguments,
         "started_at": started_at.isoformat(),
         "status": "running",
         "exit_code": None,
@@ -431,6 +441,8 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
         log_handle.write(f"shell: {shell_cmd}\n")
     if cwd:
         log_handle.write(f"cwd: {cwd}\n")
+    if arguments:
+        log_handle.write(f"arguments: {json.dumps(arguments)}\n")
     log_handle.write("\n")
     log_handle.flush()
 
@@ -442,6 +454,7 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
             "command": command_text,
             "shell": shell_cmd,
             "cwd": cwd,
+            "arguments": arguments,
             "started_at": started_at.isoformat(),
         },
         "events": [],
@@ -545,6 +558,7 @@ def _finalize_execution(
         "command": record["command"],
         "shell": record["shell"],
         "cwd": record["cwd"],
+        "arguments": record.get("arguments", []),
         "started_at": record["started_at"],
         "finished_at": record["finished_at"],
         "status": record["status"],
@@ -2294,13 +2308,15 @@ def parse_script_metadata(filepath):
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("# name:"):
-                    metadata["name"] = line[7:].strip()
-                elif line.startswith("# desc:"):
-                    metadata["desc"] = line[7:].strip()
-                elif line.startswith("# tag:"):
-                    metadata["tag"] = line[6:].strip()
-                elif not line.startswith("#") and line:
+                if line.startswith('# name:'):
+                    name_val = line[7:].strip()
+                    if name_val:
+                        metadata['name'] = name_val
+                elif line.startswith('# desc:'):
+                    metadata['desc'] = line[7:].strip()
+                elif line.startswith('# tag:'):
+                    metadata['tag'] = line[6:].strip()
+                elif not line.startswith('#') and line:
                     break
     except Exception:  # nosec B110
         pass
@@ -2762,14 +2778,14 @@ def get_workspace_state():
 
 @app.route("/api/workspace", methods=["POST"])
 def persist_workspace_state():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     success, error = save_workspace_state(data)
     return jsonify({"success": success, "error": error})
 
 
 @app.route("/api/workspace/profile", methods=["POST"])
 def save_workspace_profile():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip()
     workspace = data.get("workspace")
 
@@ -2830,7 +2846,7 @@ def delete_workspace_profile(name):
 
 @app.route("/api/scripts/content", methods=["POST"])
 def get_script_content():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     password = data.get("password", "")
 
@@ -3198,9 +3214,16 @@ def _cleanup_execution(
 
 @app.route("/api/scripts/run", methods=["POST"])
 def run_script():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     password = data.get("password", "")
+    # Accept arguments as a list (structured argv-style, not concatenated shell strings)
+    arguments = data.get("arguments", [])
+    if not isinstance(arguments, list):
+        arguments = []
+    else:
+        # Ensure all arguments are strings and safe
+        arguments = [str(arg) for arg in arguments if arg is not None]
 
     if not check_lock(rel_path, password):
         return jsonify({'error': 'Locked', 'success': False}), 401
@@ -3221,13 +3244,14 @@ def run_script():
         stop_event = threading.Event()
         t_reader = None
         try:
-            # 1. Initialize execution record inside generator to prevent leaks if not iterated
+            # 1. Initialize execution record with arguments
             execution = _start_execution_record(
                 kind="script",
                 display_name=rel_path,
-                command_text=f"{shell_cmd} {full_path}",
+                command_text=f"{shell_cmd} {full_path}" + (f" {' '.join(arguments)}" if arguments else ""),
                 shell_cmd=shell_cmd,
                 cwd=SCRIPTS_DIR,
+                arguments=arguments,
             )
 
             # Instrument script content for progress tracking
@@ -3256,13 +3280,15 @@ def run_script():
                 run_path = full_path
 
             # Use main's Windows support with your run_path
+            # CRITICAL: Append arguments to the args list (argv-style), NOT shell concatenation
+            # This prevents shell injection attacks
             args = (
-                [shell_cmd, run_path]
+                [shell_cmd, run_path] + arguments
                 if shell_cmd != "cmd.exe"
-                else ["cmd.exe", "/c", run_path]
+                else ["cmd.exe", "/c", run_path] + arguments
             )
 
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # nosec B603 - intentional local script execution
                 args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -3544,7 +3570,7 @@ def run_script():
 
 @app.route("/api/scripts/kill", methods=["POST"])
 def kill_script():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     run_id = data.get("run_id", "")
 
     if not run_id:
@@ -3564,10 +3590,20 @@ def kill_script():
     return jsonify({"success": True, "run_id": run_id})
 
 
+@app.route("/api/exec/check_lock", methods=["GET"])
+def check_terminal_lock():
+    locks = load_locks()
+    is_locked = "__terminal__" in locks
+    return jsonify({"locked": is_locked})
+
 @app.route("/api/exec", methods=["POST"])
 def exec_command():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     command = data.get("command", "")
+    password = data.get("password", "")
+
+    if not check_lock("__terminal__", password):
+        return jsonify({"error": "Terminal is locked", "success": False}), 401
 
     if not command:
         return jsonify({"error": "No command provided"}), 400
@@ -3769,7 +3805,7 @@ def exec_command():
 
 @app.route("/api/sessions/save", methods=["POST"])
 def save_session():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     session_data = data.get("session", {})
 
     try:
@@ -3799,7 +3835,7 @@ def restore_session():
 
 @app.route("/api/scripts/save", methods=["POST"])
 def save_script():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     category = data.get("category", "").strip()
     filename = data.get("filename", "").strip()
     content = data.get("content", "")
@@ -3833,7 +3869,7 @@ def save_script():
 
 @app.route("/api/scripts/delete", methods=["DELETE"])
 def delete_script():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     rel_path = request.args.get("path", "") or data.get("path", "")
     provided_pass = data.get("password", "")
 
@@ -3861,7 +3897,7 @@ def delete_script():
 
 @app.route("/api/scripts/favorite", methods=["POST"])
 def toggle_favorite():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     favs = load_favorites()
 
@@ -3878,7 +3914,7 @@ def toggle_favorite():
 
 @app.route("/api/scripts/lock", methods=["POST"])
 def manage_lock():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     old_pass = data.get("old_password", "")
     new_pass = data.get("new_password", "")  # empty string removes lock!
@@ -3909,7 +3945,7 @@ class BlockRedirectHandler(urllib.request.HTTPRedirectHandler):
         
 @app.route('/api/scripts/import_github', methods=['POST'])
 def import_github():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
     category = data.get("category", "").strip()
     filename = data.get("filename", "").strip()
@@ -4001,7 +4037,7 @@ def import_github():
 @app.route("/api/git/pr", methods=["POST"])
 def raise_pr():
     # Parse the request payload for the script path, branch, commit message, and optional target repo
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     branch_name = data.get("branch", f"script-contribution-{str(uuid.uuid4())[:4]}")
     commit_msg = data.get("message", f"Contribution: {rel_path}")
