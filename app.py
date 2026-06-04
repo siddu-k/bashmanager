@@ -2566,8 +2566,8 @@ def clear_history():
                         os.unlink(file_path)
                     elif os.path.isdir(file_path):
                         shutil.rmtree(file_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to remove execution log %s: %s", file_path, e)
 
         # Clear session logs
         if os.path.exists(SESSION_LOG_DIR):
@@ -2578,8 +2578,8 @@ def clear_history():
                         os.unlink(file_path)
                     elif os.path.isdir(file_path):
                         shutil.rmtree(file_path)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("Failed to remove session log %s: %s", file_path, e)
 
         return jsonify({
             'success': True,
