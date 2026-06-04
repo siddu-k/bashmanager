@@ -17,6 +17,7 @@ const DEFAULT_PORT = 5000;
 const MAX_SCAN_PORT = 5100;
 const POLL_MS = 200;
 const STARTUP_TIMEOUT_MS = 60_000;
+const SAFE_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:']);
 
 // We must preserve the python path to our bundled app or local python
 function resolvePythonCmd() {
@@ -162,10 +163,21 @@ function createWindow(port) {
     });
 
     mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-        if (url.startsWith(baseUrl) || !url.startsWith('http')) {
+        let target;
+        try {
+            target = new URL(url);
+        } catch {
+            return { action: 'deny' };
+        }
+
+        if (target.origin === baseUrl) {
             return { action: 'allow' };
         }
-        require('electron').shell.openExternal(url);
+
+        if (SAFE_EXTERNAL_PROTOCOLS.has(target.protocol)) {
+            require('electron').shell.openExternal(url);
+        }
+
         return { action: 'deny' };
     });
 

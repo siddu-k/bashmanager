@@ -19,7 +19,9 @@ const API = {
     pr: '/api/git/pr',
     history: '/api/history',
     history_export: '/api/history/export',
+    history_clear: '/api/history/clear',
     kill: '/api/scripts/kill',
+    command_history_clear: '/api/command_history/clear',
     reliability_summary: '/api/reliability/summary',
     reliability_failures: '/api/reliability/failures',
     reliability_trends: '/api/reliability/trends',
@@ -887,6 +889,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     bindEvents();
     initResizers();
     await restoreSession();
+    applyTerminalDensity();
 
     // Initialize auto-scroll as enabled for terminal 1
     state.autoScroll[1] = true;
@@ -1905,7 +1908,7 @@ async function executePR(relPath, branch, message, repoUrl) {
                     `Successfully pushed to branch '${data.branch}'.\n\nWould you like to open the Pull Request page on GitHub?`
                 )
             ) {
-                window.open(data.pr_url, '_blank');
+                window.open(data.pr_url, '_blank', 'noopener,noreferrer');
             }
         } else {
             if (typeof DebuggerConsole !== 'undefined') {
@@ -2498,6 +2501,35 @@ function updateAutoScrollBtn(termId, isOn) {
     persistWorkspace();
 }
 
+const TERMINAL_DENSITIES = ['compact', 'normal', 'relaxed'];
+
+function getTerminalDensity() {
+    const savedDensity = localStorage.getItem('terminalLineDensity');
+    return TERMINAL_DENSITIES.includes(savedDensity) ? savedDensity : 'normal';
+}
+
+function applyTerminalDensity(density = getTerminalDensity()) {
+    const safeDensity = TERMINAL_DENSITIES.includes(density) ? density : 'normal';
+
+    document.querySelectorAll('.cli-body').forEach(body => {
+        TERMINAL_DENSITIES.forEach(option => body.classList.remove(`terminal-density-${option}`));
+        body.classList.add(`terminal-density-${safeDensity}`);
+    });
+
+    document.querySelectorAll('.density-option').forEach(button => {
+        const active = button.dataset.density === safeDensity;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+    });
+}
+
+function setTerminalDensity(density) {
+    if (!TERMINAL_DENSITIES.includes(density)) return;
+    localStorage.setItem('terminalLineDensity', density);
+    applyTerminalDensity(density);
+    notify(`Terminal density set to ${density}.`, 'info');
+}
+
 function addTerminal() {
     const id = state.nextTerminalId++;
     state.terminals.push(id);
@@ -2527,6 +2559,7 @@ function addTerminal() {
     bodyContainer.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>';
 
     document.getElementById('cli-area').insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
+    applyTerminalDensity();
     switchTerminal(id);
     persistWorkspace();
     saveSessionDebounced();
@@ -2682,8 +2715,8 @@ function renderSidebar() {
         const isExpanded = state.expandedCategories.has(cat) || !!query;
 
         html += `
-            <div class="category-section" data-category="${cat}">
-                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
+            <div class="category-section" data-category="${escapeAttr(cat)}">
+                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" data-sidebar-action="toggle-category" data-category="${escapeAttr(cat)}">
                     <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                     </span>
@@ -2698,8 +2731,8 @@ function renderSidebar() {
 
             return `
                         <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                            onclick="selectScript('${s.relative_path}')"
-                            onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
+                            data-sidebar-action="select-script"
+                            data-script-path="${escapeAttr(s.relative_path)}"
                             title="${escapeAttr(s.desc)}"
                             data-file="${escapeAttr(s.file)}"
                             data-path="${escapeAttr(s.relative_path)}"
@@ -2709,7 +2742,11 @@ function renderSidebar() {
                             <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
                             <span class="script-item-name">${escapeHtml(displayName)}</span>
                             <span class="script-item-fav ${s.favorite ? 'visible' : ''}"
-                                  onclick="event.stopPropagation(); toggleFavorite('${s.relative_path}')">
+                                  role="button"
+                                  tabindex="0"
+                                  aria-label="Toggle favorite"
+                                  data-sidebar-action="toggle-favorite"
+                                  data-script-path="${escapeAttr(s.relative_path)}">
                                 ${ICONS.favorite}
                             </span>
                         </li>
@@ -2729,7 +2766,7 @@ function renderSidebar() {
 
     tree.innerHTML = safeHTML(`
         <div class="root-folder">
-            <div class="category-header root-header" role="button" tabindex="0" aria-expanded="${rootExpanded}" onclick="toggleRoot()" onkeydown="handleKeyboardAction(event, () => toggleRoot())">
+            <div class="category-header root-header" role="button" tabindex="0" aria-expanded="${rootExpanded}" data-sidebar-action="toggle-root">
                 <span class="category-arrow ${rootArrowClass}">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                 </span>
@@ -2750,8 +2787,8 @@ function renderSidebar() {
             const displayName = ((s.name || '') + '').trim() || s.file || (s.relative_path || '').split('/').pop() || '';
             return `
             <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                onclick="selectScript('${s.relative_path}')"
-                onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))">
+                data-sidebar-action="select-script"
+                data-script-path="${escapeAttr(s.relative_path)}">
                 <span class="script-item-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
                 <span class="script-item-name">${escapeHtml(displayName)}</span>
             </li>
@@ -2941,6 +2978,45 @@ function toggleCategory(cat) {
 function toggleRoot() {
     state.expandedRoot = !state.expandedRoot;
     renderSidebar();
+}
+
+function handleSidebarAction(event) {
+    const target = event.target.closest('[data-sidebar-action]');
+    if (!target) return;
+
+    const sidebarHost = event.currentTarget;
+    if (sidebarHost && !sidebarHost.contains(target)) return;
+
+    const action = target.dataset.sidebarAction;
+    if (action === 'toggle-favorite') {
+        event.stopPropagation();
+        if (target.dataset.scriptPath) toggleFavorite(target.dataset.scriptPath);
+        return;
+    }
+
+    if (action === 'select-script' && target.dataset.scriptPath) {
+        selectScript(target.dataset.scriptPath);
+        return;
+    }
+
+    if (action === 'toggle-category' && target.dataset.category) {
+        toggleCategory(target.dataset.category);
+        return;
+    }
+
+    if (action === 'toggle-root') {
+        toggleRoot();
+    }
+}
+
+function handleSidebarKeydown(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+
+    const target = event.target.closest('[data-sidebar-action]');
+    if (!target) return;
+
+    event.preventDefault();
+    handleSidebarAction(event);
 }
 
 function handleKeyboardAction(event, callback) {
@@ -3177,12 +3253,34 @@ function bindEvents() {
         updateAutoScrollBtn(state.activeTerminalId, true);
     }
 
+    const densityControl = document.getElementById('terminal-density-control');
+    if (densityControl) {
+        densityControl.addEventListener('click', (event) => {
+            const button = event.target.closest('.density-option');
+            if (button?.dataset.density) {
+                setTerminalDensity(button.dataset.density);
+            }
+        });
+    }
+
     // Search
     const searchInput = document.getElementById('search-input');
     searchInput.addEventListener('input', (e) => {
         state.searchQuery = e.target.value;
         renderSidebar();
     });
+
+    const categoryTree = document.getElementById('category-tree');
+    if (categoryTree) {
+        categoryTree.addEventListener('click', handleSidebarAction);
+        categoryTree.addEventListener('keydown', handleSidebarKeydown);
+    }
+
+    const favoritesList = document.getElementById('favorites-list');
+    if (favoritesList) {
+        favoritesList.addEventListener('click', handleSidebarAction);
+        favoritesList.addEventListener('keydown', handleSidebarKeydown);
+    }
 
     // CLI input
     const cliInput = document.getElementById('cli-input');
@@ -3309,9 +3407,9 @@ function bindEvents() {
     const historyOverlay = document.getElementById('history-modal-overlay');
     const historyClose = document.getElementById('history-modal-close');
     const historySearch = document.getElementById('history-search');
-    const historyFilters = document.querySelectorAll('.history-filter');
     const historyExportTxt = document.getElementById('history-export-txt');
     const historyExportLog = document.getElementById('history-export-log');
+    const btnClearHistory = document.getElementById('btn-clear-history');
 
     if (historyClose) historyClose.addEventListener('click', closeHistoryViewer);
     if (historyOverlay) {
@@ -3336,31 +3434,49 @@ function bindEvents() {
     if (historyExportTxt) historyExportTxt.addEventListener('click', () => exportExecutionHistory('txt'));
     if (historyExportLog) historyExportLog.addEventListener('click', () => exportExecutionHistory('log'));
 
+
     const historyClearBtn = document.getElementById('history-clear-btn');
     if (historyClearBtn) {
         historyClearBtn.addEventListener('click', async () => {
-            const confirmation = confirm('Are you sure you want to permanently clear your command history log?');
+            const confirmation = confirm('Are you sure you want to permanently clear your command and execution history? This will delete all script and command run logs, and reset CLI command history. This action cannot be undone.');
             if (!confirmation) return;
 
             try {
-                const response = await fetch('/api/command_history/clear', {
+                // Clear command history
+                const cmdRes = await fetch(API.command_history_clear, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
-                const result = await response.json();
+                const cmdResult = await cmdRes.json();
 
-                if (result.success) {
-                    const targetDisplayList = document.getElementById('history-list');
-                    if (targetDisplayList) {
-                        targetDisplayList.innerHTML = '<div class="history-empty-state">Command history cleared successfully.</div>';
-                    }
-                    const targetSummaryWidget = document.getElementById('history-summary');
-                    if (targetSummaryWidget) {
-                        targetSummaryWidget.innerHTML = '';
-                    }
-                    notify('Command history cleared successfully!', 'success');
+                // Clear execution history
+                const execRes = await fetch(API.history_clear, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const execResult = await execRes.json();
+
+                if (cmdResult.success && execResult.success) {
+                    // Reset client-side state
+                    state.cmdHistory = [];
+                    state.cmdHistoryIndex = -1;
+                    state.historyEntries = [];
+                    state.historySummary = {
+                        total: 0,
+                        failed: 0,
+                        successful: 0,
+                        scripts: 0,
+                        commands: 0
+                    };
+
+                    // Re-render components
+                    renderHistorySummary(state.historySummary);
+                    renderHistoryEntries(state.historyEntries);
+
+                    notify('Command and execution history cleared successfully!', 'success');
                 } else {
-                    notify('Server failed to clear history: ' + (result.error || 'Unknown error'), 'error');
+                    const errMsg = (cmdResult.error || execResult.error || 'Unknown error');
+                    notify('Server failed to clear history: ' + errMsg, 'error');
                 }
             } catch (err) {
                 console.error('Error clearing history:', err);
@@ -3695,7 +3811,12 @@ function escapeHtml(text) {
 }
 
 function escapeAttr(text) {
-    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 /**
