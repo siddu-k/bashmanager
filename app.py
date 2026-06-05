@@ -20,6 +20,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, Response
+from werkzeug.exceptions import BadRequest
 
 # Setup logger for DevShell backend logging
 logging.basicConfig(level=logging.INFO)
@@ -140,6 +141,70 @@ def validate_workspace_snapshot(data):
     return True, None
 
 
+def _parse_workspace_time(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def workspace_integrity_warnings(snapshot, saved_at=None):
+    warnings = []
+    if not isinstance(snapshot, dict):
+        return ["Workspace snapshot is malformed."]
+
+    terminals = snapshot.get("terminals")
+    if not isinstance(terminals, list) or not terminals:
+        warnings.append("Workspace snapshot has no terminal list.")
+        terminals = []
+
+    terminal_ids = {item for item in terminals if isinstance(item, int)}
+    if len(terminal_ids) != len(terminals):
+        warnings.append("Workspace snapshot contains invalid terminal ids.")
+
+    active_terminal = snapshot.get("activeTerminalId")
+    if active_terminal is not None and active_terminal not in terminal_ids:
+        warnings.append("Active terminal is missing from the terminal list.")
+
+    terminal_snapshots = snapshot.get("terminalSnapshots", [])
+    if terminal_snapshots is not None and not isinstance(terminal_snapshots, list):
+        warnings.append("Terminal snapshot payload is malformed.")
+    elif isinstance(terminal_snapshots, list):
+        for terminal_snapshot in terminal_snapshots:
+            if not isinstance(terminal_snapshot, dict):
+                warnings.append("Terminal snapshot entry is malformed.")
+                break
+            snap_id = terminal_snapshot.get("id")
+            if snap_id is not None and snap_id not in terminal_ids:
+                warnings.append("Terminal snapshot references a missing terminal.")
+                break
+
+    replay_state = snapshot.get("replayState") or {}
+    if not isinstance(replay_state, dict):
+        warnings.append("Replay state is malformed.")
+    elif replay_state.get("active"):
+        session_id = replay_state.get("sessionId")
+        if not session_id:
+            warnings.append("Active replay state is missing a session reference.")
+        else:
+            replay_path = os.path.join(SESSION_LOG_DIR, f"{session_id}.json")
+            if not os.path.exists(replay_path):
+                warnings.append("Replay session referenced by snapshot is missing.")
+
+    saved_dt = _parse_workspace_time(saved_at)
+    if saved_at and not saved_dt:
+        warnings.append("Snapshot timestamp is malformed.")
+    elif saved_dt:
+        if saved_dt.tzinfo is None:
+            saved_dt = saved_dt.replace(tzinfo=timezone.utc)
+        if (_utc_now() - saved_dt).days > 14:
+            warnings.append("Snapshot is older than 14 days.")
+
+    return warnings
+
+
 def load_workspace_state():
     if not os.path.exists(WORKSPACE_STATE_FILE):
         return None
@@ -169,6 +234,7 @@ def save_workspace_state(data):
     try:
         with open(WORKSPACE_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
+        _invalidate_reliability_cache(keys=['diagnostics'])
         return True, None
     except Exception as e:
         return False, str(e)
@@ -1726,6 +1792,7 @@ def _build_workspace_diagnostics(workspace_payload=None):
         'workspace_ok': True,
         'snapshot_corrupted': False,
         'replay_active_in_snapshot': False,
+        'has_integrity_warnings': False,
     }
 
     if not workspace_payload:
@@ -1749,6 +1816,12 @@ def _build_workspace_diagnostics(workspace_payload=None):
         }
 
     snapshot = workspace_payload.get('workspace', workspace_payload)
+    integrity = workspace_integrity_warnings(snapshot, workspace_payload.get('saved_at'))
+    if integrity:
+        warnings.extend(integrity)
+        indicators['workspace_ok'] = False
+        indicators['has_integrity_warnings'] = True
+
     if isinstance(snapshot, dict) and snapshot.get('replayState', {}).get('active'):
         indicators['replay_active_in_snapshot'] = True
         warnings.append('Last workspace snapshot had an active replay session.')
@@ -1766,7 +1839,22 @@ def _build_workspace_diagnostics(workspace_payload=None):
         'indicators': indicators,
         'saved_at': workspace_payload.get('saved_at'),
         'version': workspace_payload.get('version'),
+        'preview': _workspace_snapshot_preview(workspace_payload),
         'profile_corruption_count': len(profile_corruption),
+    }
+
+
+def _workspace_snapshot_preview(workspace_payload):
+    snapshot = workspace_payload.get('workspace', workspace_payload) if isinstance(workspace_payload, dict) else {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    terminals = snapshot.get('terminals') if isinstance(snapshot.get('terminals'), list) else []
+    return {
+        'workspace_name': workspace_payload.get('profile_name') or snapshot.get('workspaceName') or 'Recovered workspace',
+        'terminal_count': len(terminals),
+        'snapshot_timestamp': workspace_payload.get('saved_at'),
+        'has_replay': bool(snapshot.get('replayState', {}).get('active')) if isinstance(snapshot.get('replayState'), dict) else False,
+        'has_debug': bool(snapshot.get('debuggerVisible')),
     }
 
 
@@ -2396,6 +2484,17 @@ def enforce_security():
             if any(b in user_agent for b in ['Mozilla', 'Chrome', 'Safari', 'Edge']):
                 abort(403)
 
+    # 3. JSON body validation. Many API handlers safely default missing JSON to
+    # an empty payload, but malformed JSON should fail before route logic runs.
+    if request.method in ['POST', 'PUT', 'DELETE', 'PATCH'] and request.is_json:
+        try:
+            request.get_json(silent=False)
+        except BadRequest:
+            return jsonify({
+                "success": False,
+                "error": "Invalid JSON payload",
+            }), 400
+
 # ─── Routes ───────────────────────────────────────────────────────
 
 
@@ -2458,6 +2557,31 @@ def clear_history():
             pass
         with open(FAILED_HISTORY_FILE, 'w', encoding='utf-8') as f:
             pass
+
+        # Clear execution logs
+        if os.path.exists(EXECUTION_LOG_DIR):
+            for filename in os.listdir(EXECUTION_LOG_DIR):
+                file_path = os.path.join(EXECUTION_LOG_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception:
+                    pass
+
+        # Clear session logs
+        if os.path.exists(SESSION_LOG_DIR):
+            for filename in os.listdir(SESSION_LOG_DIR):
+                file_path = os.path.join(SESSION_LOG_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception:
+                    pass
+
         return jsonify({
             'success': True,
             'message': 'Execution history cleared successfully'
@@ -2770,6 +2894,41 @@ def persist_workspace_state():
     data = request.get_json(silent=True) or {}
     success, error = save_workspace_state(data)
     return jsonify({"success": success, "error": error})
+
+
+@app.route("/api/workspace/export", methods=["GET"])
+def export_workspace_state():
+    data = load_workspace_state()
+    if not data or data.get("corrupted"):
+        return jsonify({"success": False, "error": "No valid workspace snapshot to export"}), 404
+    body = json.dumps(data, indent=2)
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=devshell-workspace.json"},
+    )
+
+
+@app.route("/api/workspace/import", methods=["POST"])
+def import_workspace_state():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Import must be a JSON object"}), 400
+
+    workspace = payload.get("workspace", payload)
+    valid, error = validate_workspace_snapshot(workspace)
+    if not valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    success, error = save_workspace_state(workspace)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+
+    stored = load_workspace_state()
+    return jsonify({
+        "success": True,
+        "diagnostics": _build_workspace_diagnostics(stored),
+    })
 
 
 @app.route("/api/workspace/profile", methods=["POST"])
@@ -3232,6 +3391,7 @@ def run_script():
         execution = None
         stop_event = threading.Event()
         t_reader = None
+        temp_path_created = None
         try:
             # 1. Initialize execution record with arguments
             execution = _start_execution_record(
@@ -3255,6 +3415,8 @@ def run_script():
                     temp_fd, temp_path = tempfile.mkstemp(
                         suffix=".sh", prefix=".tmp_run_", dir=temp_dir
                     )
+                    # Track created temp path so we can always clean it up
+                    temp_path_created = temp_path
                     with os.fdopen(
                         temp_fd, "w", encoding="utf-8", newline="\n"
                     ) as temp_f:
@@ -3504,7 +3666,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=True,
                 error_message="Client disconnected",
                 stop_event=stop_event,
@@ -3517,7 +3679,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=False,
                 error_message="Execution timed out",
                 stop_event=stop_event,
@@ -3535,7 +3697,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=False,
                 error_message=str(e),
                 stop_event=stop_event,
@@ -3549,7 +3711,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 stop_event=stop_event,
                 reader_thread=t_reader,
             )

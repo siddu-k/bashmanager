@@ -60,11 +60,8 @@ body:
       description: Confirm the following before submitting.
       options:
         - label: I have read the contributing guidelines
-          value: read_contributing
         - label: I have checked for duplicate issues
-          value: checked_duplicates
         - label: I would like to work on a pull request to implement this
-          value: will_work_on_pr
 
   - type: textarea
     id: additional

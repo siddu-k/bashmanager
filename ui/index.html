@@ -340,6 +340,15 @@
                                 <path d="m19 12-7 7-7-7" />
                             </svg>
                         </button>
+                        <div class="terminal-density-control" id="terminal-density-control" role="group"
+                            aria-label="Terminal line height density">
+                            <button class="density-option" type="button" data-density="compact"
+                                title="Compact line height">Compact</button>
+                            <button class="density-option active" type="button" data-density="normal"
+                                title="Normal line height">Normal</button>
+                            <button class="density-option" type="button" data-density="relaxed"
+                                title="Relaxed line height">Relaxed</button>
+                        </div>
                         <div class="terminal-search-wrapper">
                             <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
                                 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -1197,6 +1206,7 @@ echo 'Hello World'"></textarea>
             <div class="modal-body">
                 <p>DevShell detected a previous workspace session.</p>
                 <p>Would you like to restore it?</p>
+                <div id="workspace-restore-preview" class="workspace-integrity-panel" hidden></div>
                 <div class="workspace-recovery-actions">
                     <button id="workspace-restore-btn" class="btn">Restore Workspace</button>
                     <button id="workspace-safe-btn" class="btn">Safe Restore</button>
@@ -1219,6 +1229,11 @@ echo 'Hello World'"></textarea>
                         type="text"
                         placeholder="Profile name">
                     <button id="workspace-save-profile" class="btn">Save Current Workspace</button>
+                </div>
+                <div class="workspace-recovery-actions">
+                    <button id="workspace-export-btn" class="btn">Export Snapshot</button>
+                    <button id="workspace-import-btn" class="btn">Import Snapshot</button>
+                    <input id="workspace-import-file" type="file" accept="application/json,.json" hidden>
                 </div>
                 <div id="workspace-profile-list"></div>
             </div>
