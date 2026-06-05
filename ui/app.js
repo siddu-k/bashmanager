@@ -2468,6 +2468,30 @@ function downloadTerminalLog() {
     notify(`Log downloaded as "${filename}".`, 'success');
 }
 
+function insertTerminalSessionSplitter() {
+    const termId = state.activeTerminalId;
+    const termBody = getTerminalBody(termId);
+    if (!termBody) {
+        notify('Active terminal not found.', 'error');
+        return;
+    }
+
+    const timestamp = new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    });
+    const splitter = document.createElement('div');
+    splitter.className = 'terminal-session-splitter';
+    splitter.textContent = `Session Marker [${timestamp}]`;
+    termBody.appendChild(splitter);
+    splitter.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    notify(`Session marker added to Terminal ${termId}.`, 'info');
+    persistWorkspace();
+    saveSessionDebounced();
+}
+
 /**
  * Toggles auto-scroll on/off for the active terminal.
  * Updates the button appearance to reflect current state.
@@ -3463,6 +3487,11 @@ function bindEvents() {
     const btnDownloadLog = document.getElementById('btn-download-log');
     if (btnDownloadLog) {
         btnDownloadLog.addEventListener('click', downloadTerminalLog);
+    }
+
+    const btnInsertSplitter = document.getElementById('btn-insert-splitter');
+    if (btnInsertSplitter) {
+        btnInsertSplitter.addEventListener('click', insertTerminalSessionSplitter);
     }
 
     const btnAutoscroll = document.getElementById('btn-autoscroll');
