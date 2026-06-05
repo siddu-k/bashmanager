@@ -836,6 +836,41 @@ body {
     gap: 12px;
 }
 
+.terminal-density-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+}
+
+.density-option {
+    min-width: 56px;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+
+.density-option:hover,
+.density-option:focus-visible {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.density-option.active {
+    color: var(--accent);
+    background: rgba(99, 102, 241, 0.14);
+}
+
 .cli-dots {
     display: flex;
     gap: 4px;
@@ -873,10 +908,22 @@ body {
     padding: 20px;
     font-family: var(--font-mono);
     font-size: 13px;
-    line-height: 1.6;
+    line-height: var(--terminal-line-height, 1.6);
     color: #e2e8f0;
     white-space: pre-wrap;
     word-break: break-word;
+}
+
+.cli-body.terminal-density-compact {
+    --terminal-line-height: 1.35;
+}
+
+.cli-body.terminal-density-normal {
+    --terminal-line-height: 1.6;
+}
+
+.cli-body.terminal-density-relaxed {
+    --terminal-line-height: 1.9;
 }
 
 .cli-welcome {
