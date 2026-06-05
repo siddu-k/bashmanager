@@ -67,6 +67,7 @@ let state = {
     workspaceProfiles: [],
     restoreMode: 'full',
     workspaceRecoveryEnabled: true,
+    pendingWorkspaceSnapshot: null,
     sessionId: null,
     lastSaveTimestamp: 0,
     runningScripts: {},  // termId -> { step, total, command, status }
@@ -116,6 +117,76 @@ function restoreUnlockedScripts(raw = {}) {
     }
     unlockCredentials.clear();
 }
+
+function $(id) {
+    return document.getElementById(id);
+}
+
+function on(target, eventName, handler, options) {
+    const el = typeof target === 'string' ? $(target) : target;
+    if (!el) return null;
+    el.addEventListener(eventName, handler, options);
+    return el;
+}
+
+async function fetchJson(url, options = {}, label = 'Request') {
+    const { allowStatuses = [], ...fetchOptions } = options;
+    const res = await fetch(url, fetchOptions);
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok && !allowStatuses.includes(res.status)) {
+        const error = new Error(data.error || `${label} failed (${res.status})`);
+        error.status = res.status;
+        error.data = data;
+        throw error;
+    }
+
+    if (data && typeof data === 'object') {
+        Object.defineProperty(data, '__status', { value: res.status });
+    }
+    return data;
+}
+
+function postJson(url, body, options = {}) {
+    return fetchJson(url, {
+        method: options.method || 'POST',
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        body: JSON.stringify(body),
+        allowStatuses: options.allowStatuses || []
+    }, options.label);
+}
+
+function setLoading(el, loading, loadingText) {
+    if (!el) return;
+    if (!el.dataset.idleText) el.dataset.idleText = el.textContent;
+    el.disabled = loading;
+    el.textContent = loading ? loadingText : el.dataset.idleText;
+}
+
+function debounce(fn, delay = 250) {
+    let timer;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+    };
+}
+
+function openOverlay(id) {
+    $(id)?.classList.add('active');
+}
+
+function closeOverlay(id) {
+    $(id)?.classList.remove('active');
+}
+
+function bindOverlayClose(overlayId, closeIds, closeFn = () => closeOverlay(overlayId)) {
+    closeIds.forEach(id => on(id, 'click', closeFn));
+    on(overlayId, 'click', (e) => {
+        if (e.target === $(overlayId)) closeFn();
+    });
+}
+
+const persistWorkspaceDebounced = debounce(() => persistWorkspace(), 500);
 
 const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
 
@@ -179,8 +250,7 @@ if (!window.__devshell_lifecycle_registered) {
 // ─── Init ──────────────────────────────────────────────────
 async function openAnalytics() {
     try {
-        const res = await fetch('/api/history/analytics');
-        const data = await res.json();
+        const data = await fetchJson('/api/history/analytics', {}, 'Analytics');
 
         if (!data.success) {
             notify('Failed to load analytics.', 'error');
@@ -189,33 +259,33 @@ async function openAnalytics() {
 
         const summary = data.summary;
 
-        document.getElementById('analytics-total').textContent = summary.total;
-        document.getElementById('analytics-success').textContent = summary.successful;
-        document.getElementById('analytics-failed').textContent = summary.failed;
-        document.getElementById('analytics-avg').textContent = `${summary.avg_duration}s`;
+        $('analytics-total').textContent = summary.total;
+        $('analytics-success').textContent = summary.successful;
+        $('analytics-failed').textContent = summary.failed;
+        $('analytics-avg').textContent = `${summary.avg_duration}s`;
 
-        document.getElementById('analytics-top-scripts').innerHTML =
+        $('analytics-top-scripts').innerHTML =
             data.top_scripts.map(([name, count]) => `
                 <div class="analytics-item">
                     ${escapeHtml(name)} — ${count} runs
                 </div>
             `).join('');
 
-        document.getElementById('analytics-slowest').innerHTML =
+        $('analytics-slowest').innerHTML =
             data.slowest.map(entry => `
                 <div class="analytics-item">
                     ${escapeHtml(entry.display_name)} — ${entry.duration_seconds}s
                 </div>
             `).join('');
 
-        document.getElementById('analytics-failures').innerHTML =
+        $('analytics-failures').innerHTML =
             data.recent_failures.map(entry => `
                 <div class="analytics-item">
                     ${escapeHtml(entry.display_name)} — Exit ${entry.exit_code}
                 </div>
             `).join('');
 
-        document.getElementById('analytics-modal-overlay').classList.add('active');
+        openOverlay('analytics-modal-overlay');
 
     } catch (err) {
         console.error(err);
@@ -228,15 +298,9 @@ async function openAnalytics() {
 const RELIABILITY_SUMMARY_VERSION = 1;
 
 async function fetchReliabilityApi(url) {
-    const res = await fetch(url);
-    let payload;
-    try {
-        payload = await res.json();
-    } catch {
-        throw new Error('Invalid reliability API response');
-    }
+    const payload = await fetchJson(url, {}, 'Reliability API');
     if (!payload.success) {
-        throw new Error(payload.error || `Request failed (${res.status})`);
+        throw new Error(payload.error || 'Reliability API request failed');
     }
     return payload.data;
 }
@@ -860,20 +924,19 @@ function renderReliabilityDashboard() {
 }
 
 async function openReliabilityDashboard() {
-    const overlay = document.getElementById('reliability-modal-overlay');
+    const overlay = $('reliability-modal-overlay');
     if (!overlay) return;
-    overlay.classList.add('active');
+    openOverlay('reliability-modal-overlay');
     await loadReliabilityDashboard(false);
 }
 
 function closeReliabilityDashboard() {
-    document.getElementById('reliability-modal-overlay')?.classList.remove('active');
+    closeOverlay('reliability-modal-overlay');
 }
 
 async function loadCommandHistory() {
     try {
-        const res = await fetch('/api/command_history');
-        const data = await res.json();
+        const data = await fetchJson('/api/command_history', {}, 'Command history');
 
         if (data.success) {
             state.cmdHistory = data.history || [];
@@ -889,6 +952,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     bindEvents();
     initResizers();
     await restoreSession();
+    if (state.workspaceRecoveryEnabled) {
+        await checkWorkspaceRecovery();
+    }
     applyTerminalDensity();
 
     // Initialize auto-scroll as enabled for terminal 1
@@ -964,8 +1030,7 @@ function initResizers() {
 
 async function loadScripts() {
     try {
-        const res = await fetch(API.scripts);
-        state.scripts = await res.json();
+        state.scripts = await fetchJson(API.scripts, {}, 'Scripts');
         renderSidebar();
         renderWelcomeStats();
     } catch (err) {
@@ -976,13 +1041,11 @@ async function loadScripts() {
 
 async function fetchScriptContent(relPath, password = '') {
     try {
-        const res = await fetch(API.content, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: password })
+        const data = await postJson(API.content, { path: relPath, password }, {
+            allowStatuses: [401],
+            label: 'Script content'
         });
-        const data = await res.json();
-        if (res.status === 401) {
+        if (data.__status === 401 || data.locked || data.error === 'Locked') {
             return { error: 'Locked', locked: true };
         }
         return data.content || '';
@@ -1459,8 +1522,7 @@ async function loadExecutionHistory(query = '', filter = 'all', limit = 200) {
     }
     params.set('limit', String(limit));
 
-    const res = await fetch(`${API.history}?${params.toString()}`);
-    return res.json();
+    return fetchJson(`${API.history}?${params.toString()}`, {}, 'Execution history');
 }
 
 function formatHistoryDuration(entry) {
@@ -1585,9 +1647,8 @@ async function refreshExecutionHistory() {
 }
 
 async function openHistoryViewer() {
-    const overlay = document.getElementById('history-modal-overlay');
-    if (!overlay) return;
-    overlay.classList.add('active');
+    if (!$('history-modal-overlay')) return;
+    openOverlay('history-modal-overlay');
     if (!state.reliabilityDiagnostics) {
         try {
             state.reliabilityDiagnostics = await fetchReliabilityApi(API.reliability_diagnostics);
@@ -1599,9 +1660,7 @@ async function openHistoryViewer() {
 }
 
 function closeHistoryViewer() {
-    const overlay = document.getElementById('history-modal-overlay');
-    if (!overlay) return;
-    overlay.classList.remove('active');
+    closeOverlay('history-modal-overlay');
 }
 
 async function exportExecutionHistory(format = 'log') {
@@ -1628,33 +1687,20 @@ async function exportExecutionHistory(format = 'log') {
 }
 
 async function saveScript(category, filename, content) {
-    const btn = document.getElementById('modal-save');
-
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Saving...';
-    }
+    const btn = $('modal-save');
+    setLoading(btn, true, 'Saving...');
     try {
         const relPath = `${category}/${filename}`.replace(/\/+/g, '/');
 
-        const res = await fetch(API.save, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                category,
-                filename,
-                content,
-                password: getUnlockPassword(relPath)
-            }),
-        });
-        const data = await res.json();
+        const data = await postJson(API.save, {
+            category,
+            filename,
+            content,
+            password: getUnlockPassword(relPath)
+        }, { allowStatuses: [401], label: 'Save script' });
 
-        if (res.status === 401) {
+        if (data.__status === 401) {
             notify('Cannot save: Script is locked.', 'warning');
-            if (btn) {
-                btn.disabled = false;
-                btn.textContent = 'Save';
-            }
             return;
         }
         if (data.success) {
@@ -1667,23 +1713,19 @@ async function saveScript(category, filename, content) {
         console.error('Failed to save script:', err);
         notify(`Failed to save script: ${err.message}`, 'error');
     } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Save';
-        }
+        setLoading(btn, false);
     }
 }
 
 async function deleteScript(relPath) {
     if (!confirm('Are you sure you want to delete this script permanently?')) return;
     try {
-        const res = await fetch(API.delete, {
+        const data = await postJson(API.delete, { path: relPath, password: getUnlockPassword(relPath) }, {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath) })
+            allowStatuses: [401],
+            label: 'Delete script'
         });
-        const data = await res.json();
-        if (res.status === 401) {
+        if (data.__status === 401) {
             notify('This script is locked. Unlock it first to delete.', 'warning');
             return;
         }
@@ -1700,12 +1742,7 @@ async function deleteScript(relPath) {
 
 async function toggleFavorite(relPath) {
     try {
-        const res = await fetch(API.favorite, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath }),
-        });
-        const data = await res.json();
+        const data = await postJson(API.favorite, { path: relPath }, { label: 'Favorite script' });
         await loadScripts();
 
         if (state.activeScript === relPath) {
@@ -1725,25 +1762,15 @@ async function toggleFavorite(relPath) {
 }
 
 async function importGithubScript(url, category, filename) {
-    const btn = document.getElementById('github-modal-import');
-
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Importing...';
-    }
+    const btn = $('github-modal-import');
+    setLoading(btn, true, 'Importing...');
     try {
-        const res = await fetch(API.import_github, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                url,
-                category,
-                filename
-            }),
+        const data = await postJson(API.import_github, { url, category, filename }, {
+            allowStatuses: [401],
+            label: 'GitHub import'
         });
-        const data = await res.json();
 
-        if (res.status === 401) {
+        if (data.__status === 401) {
             notify(
                 'File already exists and is locked.',
                 'warning'
@@ -1754,9 +1781,7 @@ async function importGithubScript(url, category, filename) {
 
         if (data.success) {
             await loadScripts();
-            document
-                .getElementById('github-modal-overlay')
-                .classList.remove('active');
+            closeOverlay('github-modal-overlay');
 
             selectScript(data.path);
             appendToCli(
@@ -1781,10 +1806,7 @@ async function importGithubScript(url, category, filename) {
             'error'
         );
     } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = 'Import';
-        }
+        setLoading(btn, false);
     }
 }
 
@@ -1792,8 +1814,7 @@ async function importGithubScript(url, category, filename) {
 
 // 1. Opens the custom PR modal and populates default branch/message values
 function raisePRFlow(relPath) {
-    const overlay = document.getElementById('pr-modal-overlay');
-    if (!overlay) return;
+    if (!$('pr-modal-overlay')) return;
 
     // Set default values based on script path to speed up workflow
     const defaultBranch = `contrib-${relPath.replace(/\//g, '-').replace('.sh', '')}`;
@@ -1802,7 +1823,7 @@ function raisePRFlow(relPath) {
     document.getElementById('pr-branch').value = defaultBranch;
     document.getElementById('pr-message').value = defaultMsg;
 
-    overlay.classList.add('active');
+    openOverlay('pr-modal-overlay');
 }
 
 // 2. Executes the API call to the backend after the modal is submitted
@@ -1862,18 +1883,12 @@ async function executePR(relPath, branch, message, repoUrl) {
     }
 
     try {
-        const res = await fetch(API.pr, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-
-            body: JSON.stringify({
-                path: relPath,
-                branch,
-                message,
-                target_repo: repoUrl
-            }),
-        });
-        const data = await res.json();
+        const data = await postJson(API.pr, {
+            path: relPath,
+            branch,
+            message,
+            target_repo: repoUrl
+        }, { label: 'PR workflow' });
 
         if (data.success) {
             if (typeof DebuggerConsole !== 'undefined') {
@@ -1898,9 +1913,7 @@ async function executePR(relPath, branch, message, repoUrl) {
             );
             
             // Hide modal on success
-            document
-                .getElementById('pr-modal-overlay')
-                .classList.remove('active');
+            closeOverlay('pr-modal-overlay');
 
             // Offer PR page opening
             if (
@@ -1941,12 +1954,11 @@ async function executePR(relPath, branch, message, repoUrl) {
 }
 async function manageLock(relPath, oldPass, newPass) {
     try {
-        const res = await fetch(API.lock, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, old_password: oldPass, new_password: newPass }),
-        });
-        const data = await res.json();
+        const data = await postJson(API.lock, {
+            path: relPath,
+            old_password: oldPass,
+            new_password: newPass
+        }, { label: 'Lock script' });
 
         if (!data.success) {
             notify(`Lock operation failed: ${data.error}`, 'error');
@@ -1971,10 +1983,11 @@ async function manageLock(relPath, oldPass, newPass) {
 
 async function openReplay(sessionId) {
     try {
-        const res = await fetch(`/api/history/session/${sessionId}`);
-        const data = await res.json();
+        const data = await fetchJson(`/api/history/session/${sessionId}`, {
+            allowStatuses: [400, 404, 500]
+        }, 'Replay session');
 
-        if (!res.ok) {
+        if (data.__status >= 400) {
             notify(data.error || 'Failed to load replay session.', 'error');
             return;
         }
@@ -1984,7 +1997,6 @@ async function openReplay(sessionId) {
         state.replay.playing = true;
         state.replay.sessionId = sessionId;
 
-        const overlay = document.getElementById('replay-modal-overlay');
         const terminal = document.getElementById('replay-terminal');
         const metadata = document.getElementById('replay-metadata');
         const replayDiagnostics = document.getElementById('replay-diagnostics');
@@ -2020,7 +2032,7 @@ async function openReplay(sessionId) {
             }
         }
 
-        overlay.classList.add('active');
+        openOverlay('replay-modal-overlay');
 
         playReplay();
         persistWorkspace();
@@ -2106,9 +2118,7 @@ function closeReplay() {
     clearTimeout(state.replay.timer);
     state.replay.sessionId = null;
 
-    document
-        .getElementById('replay-modal-overlay')
-        .classList.remove('active');
+    closeOverlay('replay-modal-overlay');
 }
 
 function updateProgressTrackerUI() {
@@ -2171,226 +2181,10 @@ function appendToCli(text, className = '', termId = state.activeTerminalId) {
     }
 
     highlightTerminalSearch();
-    persistWorkspace();
+    persistWorkspaceDebounced();
 }
-
-function clearCli() {
-    const termBody = getTerminalBody(state.activeTerminalId);
-    if (termBody) {
-        termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
-    }
-    document.getElementById('run-status').textContent = '';
-    document.getElementById('run-status').className = 'run-status';
-    document.getElementById('resource-panel').style.display = 'none';
-
-    if (state.runningScripts && state.runningScripts[state.activeTerminalId] && state.runningScripts[state.activeTerminalId].status !== 'running') {
-        state.runningScripts[state.activeTerminalId].status = 'idle';
-        updateProgressTrackerUI();
-    }
-}
-
 
 // ─── Session Persistence ──────────────────────────────────
-
-async function saveSession() {
-    const sessionData = {
-        sessionId: state.sessionId || generateUUID(),
-        timestamp: Date.now(),
-
-        terminals: state.terminals.map(id => {
-            const body =
-                document.getElementById(`terminal-body-${id}`) ||
-                (id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
-
-            if (!body) return null;
-
-            const lines = Array.from(
-                body.querySelectorAll('.cli-output-block')
-            )
-                .slice(-100)
-                .map(el => ({
-                    text: el.textContent,
-                    className: el.className.replace(
-                        'cli-output-block ',
-                        ''
-                    )
-                }));
-
-            return {
-                id,
-                lines
-            };
-        }).filter(t => t !== null),
-
-        activeTerminalId: state.activeTerminalId,
-        nextTerminalId: state.nextTerminalId,
-
-        cmdHistory: state.cmdHistory,
-        cmdHistoryIndex: state.cmdHistoryIndex,
-
-        unlockedScripts: serializeUnlockedScripts()
-    };
-
-    try {
-        await fetch('/api/sessions/save', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session: sessionData
-            })
-        });
-
-        state.sessionId = sessionData.sessionId;
-        state.lastSaveTimestamp = Date.now();
-
-    } catch (e) {
-        console.error('Failed to save session:', e);
-    }
-}
-
-
-function generateUUID() {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
-        .replace(/[xy]/g, c => {
-            const r = Math.random() * 16 | 0;
-            const v = c === 'x'
-                ? r
-                : (r & 0x3 | 0x8);
-
-            return v.toString(16);
-        });
-}
-
-
-// let saveSessionTimeout = null;
-
-function saveSessionDebounced() {
-    if (saveSessionTimeout) {
-        clearTimeout(saveSessionTimeout);
-    }
-
-    saveSessionTimeout = setTimeout(() => {
-        saveSession();
-    }, 2000);
-}
-
-
-async function restoreSession() {
-    try {
-        const res = await fetch('/api/sessions/restore');
-        const data = await res.json();
-
-        if (!data.success || !data.session) {
-            return;
-        }
-
-        const session = data.session;
-
-        state.sessionId = session.sessionId || null;
-
-        const terminalIds = session.terminals?.map(t => t.id);
-        state.terminals = terminalIds?.length ? terminalIds : [1];
-
-        state.activeTerminalId =
-            session.activeTerminalId || 1;
-
-        state.nextTerminalId =
-            Math.max(...state.terminals) + 1;
-
-        state.cmdHistory =
-            session.cmdHistory || [];
-
-        state.cmdHistoryIndex =
-            session.cmdHistoryIndex || -1;
-
-        restoreUnlockedScripts(session.unlockedScripts);
-
-        const existingTabs =
-            document.querySelectorAll('.cli-tab');
-
-        existingTabs.forEach(tab => {
-            if (tab.id !== 'tab-btn-1') {
-                tab.remove();
-            }
-        });
-
-        const existingBodies =
-            document.querySelectorAll('.cli-body');
-
-        existingBodies.forEach(body => {
-            if (body.id !== 'terminal-body') {
-                body.remove();
-            }
-        });
-
-        for (const term of session.terminals || []) {
-
-            if (term.id !== 1) {
-                // Create terminal DOM directly with the saved ID
-                // instead of calling addTerminal() which would
-                // corrupt state.nextTerminalId and state.terminals
-                const tabsContainer = document.getElementById('cli-tabs');
-                const tabBtn = document.createElement('div');
-                tabBtn.className = 'cli-tab';
-                tabBtn.id = `tab-btn-${term.id}`;
-                tabBtn.innerHTML = `
-                    <span class="cli-dots" style="margin-right: 6px;">
-                        <span class="dot dot-red"></span>
-                        <span class="dot dot-yellow"></span>
-                        <span class="dot dot-green"></span>
-                    </span>
-                    <span>Terminal ${term.id}</span>
-                    <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${term.id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
-                tabBtn.onclick = () => switchTerminal(term.id);
-                tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
-
-                const bodyContainer = document.createElement('div');
-                bodyContainer.className = 'cli-body';
-                bodyContainer.setAttribute('role', 'log');
-                bodyContainer.setAttribute('aria-live', 'polite');
-                bodyContainer.id = `terminal-body-${term.id}`;
-                bodyContainer.style.display = 'none';
-
-                document.getElementById('cli-area').insertBefore(
-                    bodyContainer,
-                    document.querySelector('.cli-input-bar')
-                );
-            }
-
-            const body =
-                document.getElementById(`terminal-body-${term.id}`) ||
-                (term.id === 1
-                    ? document.getElementById('terminal-body')
-                    : null);
-
-            if (!body) continue;
-
-            body.innerHTML = '';
-
-            for (const line of term.lines || []) {
-                const div = document.createElement('div');
-
-                div.className =
-                    `cli-output-block ${line.className}`;
-
-                div.textContent = line.text;
-
-                body.appendChild(div);
-            }
-        }
-
-        switchTerminal(state.activeTerminalId);
-
-        console.log('Session restored successfully');
-
-    } catch (e) {
-        console.error('Failed to restore session:', e);
-    }
-}
 
 // ─── Terminal Utility Actions ───────────────────────────────
 
@@ -2498,7 +2292,7 @@ function updateAutoScrollBtn(termId, isOn) {
         termBody.scrollTop = termBody.scrollHeight;
     }    
     highlightTerminalSearch();
-    persistWorkspace();
+    persistWorkspaceDebounced();
 }
 
 const TERMINAL_DENSITIES = ['compact', 'normal', 'relaxed'];
@@ -2589,15 +2383,7 @@ async function saveSession() {
     };
 
     try {
-        await fetch('/api/sessions/save', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                session: sessionData
-            })
-        });
+        await postJson('/api/sessions/save', { session: sessionData }, { label: 'Save session' });
 
         state.sessionId = sessionData.sessionId;
         state.lastSaveTimestamp = Date.now();
@@ -2621,23 +2407,12 @@ function generateUUID() {
 }
 
 
-let saveSessionTimeout = null;
-
-function saveSessionDebounced() {
-    if (saveSessionTimeout) {
-        clearTimeout(saveSessionTimeout);
-    }
-
-    saveSessionTimeout = setTimeout(() => {
-        saveSession();
-    }, 2000);
-}
+const saveSessionDebounced = debounce(saveSession, 2000);
 
 
 async function restoreSession() {
     try {
-        const res = await fetch('/api/sessions/restore');
-        const data = await res.json();
+        const data = await fetchJson('/api/sessions/restore', {}, 'Restore session');
 
         if (!data.success || !data.session) {
             return;
@@ -2685,35 +2460,7 @@ async function restoreSession() {
         for (const term of session.terminals || []) {
 
             if (term.id !== 1) {
-                // Create terminal DOM directly with the saved ID
-                // instead of calling addTerminal() which would
-                // corrupt state.nextTerminalId and state.terminals
-                const tabsContainer = document.getElementById('cli-tabs');
-                const tabBtn = document.createElement('div');
-                tabBtn.className = 'cli-tab';
-                tabBtn.id = `tab-btn-${term.id}`;
-                tabBtn.innerHTML = `
-                    <span class="cli-dots" style="margin-right: 6px;">
-                        <span class="dot dot-red"></span>
-                        <span class="dot dot-yellow"></span>
-                        <span class="dot dot-green"></span>
-                    </span>
-                    <span>Terminal ${term.id}</span>
-                    <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${term.id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
-                tabBtn.onclick = () => switchTerminal(term.id);
-                tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
-
-                const bodyContainer = document.createElement('div');
-                bodyContainer.className = 'cli-body';
-                bodyContainer.setAttribute('role', 'log');
-                bodyContainer.setAttribute('aria-live', 'polite');
-                bodyContainer.id = `terminal-body-${term.id}`;
-                bodyContainer.style.display = 'none';
-
-                document.getElementById('cli-area').insertBefore(
-                    bodyContainer,
-                    document.querySelector('.cli-input-bar')
-                );
+                insertTerminalShell(term.id);
             }
 
             const body =
@@ -2749,24 +2496,29 @@ async function restoreSession() {
 
 // ─── Terminal Tabs ───
 
-function addTerminal() {
-    const id = state.nextTerminalId++;
-    state.terminals.push(id);
-    state.autoScroll[id] = true; // auto-scroll on by default for new terminals
-
+function insertTerminalShell(id, html = '') {
     const tabsContainer = document.getElementById('cli-tabs');
+    const cliArea = document.getElementById('cli-area');
+    if (!tabsContainer || !cliArea) return {};
+
     const tabBtn = document.createElement('div');
     tabBtn.className = 'cli-tab';
+    tabBtn.dataset.id = id;
     tabBtn.id = `tab-btn-${id}`;
     tabBtn.innerHTML = `
-        <span class="cli-dots" style="margin-right: 6px;">
+        <span class="cli-tab-title">
             <span class="dot dot-red"></span>
             <span class="dot dot-yellow"></span>
             <span class="dot dot-green"></span>
+            <span>Terminal ${id}</span>
         </span>
-        <span>Terminal ${id}</span> 
-        <button class="cli-tab-close" title="Close" aria-label="Close terminal" onclick="event.stopPropagation(); closeTerminal(${id})"><svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>`;
-    tabBtn.onclick = () => switchTerminal(id);
+        <button class="cli-tab-close" title="Close" aria-label="Close terminal">Ã—</button>
+    `;
+    tabBtn.addEventListener('click', () => switchTerminal(id));
+    tabBtn.querySelector('.cli-tab-close')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeTerminal(id);
+    });
     tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
 
     const bodyContainer = document.createElement('div');
@@ -2775,8 +2527,18 @@ function addTerminal() {
     bodyContainer.setAttribute('aria-live', 'polite');
     bodyContainer.id = `terminal-body-${id}`;
     bodyContainer.style.display = 'none';
-    bodyContainer.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>';
+    bodyContainer.innerHTML = html;
+    cliArea.insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
 
+    return { tabBtn, bodyContainer };
+}
+
+function addTerminal() {
+    const id = state.nextTerminalId++;
+    state.terminals.push(id);
+    state.autoScroll[id] = true; // auto-scroll on by default for new terminals
+
+    insertTerminalShell(id, '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>');
     document.getElementById('cli-area').insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
     applyTerminalDensity();
     switchTerminal(id);
@@ -3248,7 +3010,6 @@ function handleKeyboardAction(event, callback) {
 // ─── Modals ─────────────────────────────────────────────
 
 function openModal(mode = 'new') {
-    const overlay = document.getElementById('modal-overlay');
     const title = document.getElementById('modal-title');
 
     if (mode === 'edit' && state.activeScript) {
@@ -3266,15 +3027,18 @@ function openModal(mode = 'new') {
         document.getElementById('modal-editor').value = `#!/bin/bash\n# name: \n# desc: \n# tag: \n\n`;
     }
 
-    overlay.classList.add('active');
+    openOverlay('modal-overlay');
 }
 
 function closeModal() {
-    document.getElementById('modal-overlay').classList.remove('active');
+    closeOverlay('modal-overlay');
 }
 
 // ─── Event Bindings ────────────────────────────────────────
 function bindEvents() {
+    if (window.__devshell_events_bound) return;
+    window.__devshell_events_bound = true;
+
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
@@ -3623,19 +3387,12 @@ function bindEvents() {
     document.getElementById('btn-clear').addEventListener('click', clearCli);
     document.getElementById('btn-close-detail').addEventListener('click', showWelcome);
 
-    const historyOverlay = document.getElementById('history-modal-overlay');
-    const historyClose = document.getElementById('history-modal-close');
     const historySearch = document.getElementById('history-search');
     const historyExportTxt = document.getElementById('history-export-txt');
     const historyExportLog = document.getElementById('history-export-log');
     const btnClearHistory = document.getElementById('btn-clear-history');
 
-    if (historyClose) historyClose.addEventListener('click', closeHistoryViewer);
-    if (historyOverlay) {
-        historyOverlay.addEventListener('click', (e) => {
-            if (e.target === historyOverlay) closeHistoryViewer();
-        });
-    }
+    bindOverlayClose('history-modal-overlay', ['history-modal-close'], closeHistoryViewer);
     if (historySearch) {
         let historySearchTimer;
         historySearch.addEventListener('input', () => {
@@ -3661,6 +3418,9 @@ function bindEvents() {
             if (!confirmation) return;
 
             try {
+                const result = await fetchJson('/api/command_history/clear', {
+                    method: 'POST'
+                }, 'Clear command history');
                 // Clear command history
                 const cmdRes = await fetch(API.command_history_clear, {
                     method: 'POST',
@@ -3705,9 +3465,7 @@ function bindEvents() {
     }
 
     // Main Modal controls
-    document.getElementById('modal-close').addEventListener('click', closeModal);
-    document.getElementById('modal-cancel').addEventListener('click', closeModal);
-    document.getElementById('modal-overlay').addEventListener('click', (e) => { if (e.target.id === 'modal-overlay') closeModal(); });
+    bindOverlayClose('modal-overlay', ['modal-close', 'modal-cancel'], closeModal);
 
     // Arguments Modal setup
     const argumentsOverlay = document.getElementById('arguments-modal-overlay');
@@ -3761,13 +3519,11 @@ function bindEvents() {
             document.getElementById('github-url').value = '';
             document.getElementById('github-category').value = '';
             document.getElementById('github-filename').value = '';
-            githubOverlay.classList.add('active');
+            openOverlay('github-modal-overlay');
         });
 
-        const closeGithub = () => githubOverlay.classList.remove('active');
-        document.getElementById('github-modal-close').addEventListener('click', closeGithub);
-        document.getElementById('github-modal-cancel').addEventListener('click', closeGithub);
-        githubOverlay.addEventListener('click', (e) => { if (e.target.id === 'github-modal-overlay') closeGithub(); });
+        const closeGithub = () => closeOverlay('github-modal-overlay');
+        bindOverlayClose('github-modal-overlay', ['github-modal-close', 'github-modal-cancel'], closeGithub);
 
         document.getElementById('github-modal-import').addEventListener('click', () => {
             if (!url || !category || !filename) {
@@ -3783,11 +3539,9 @@ function bindEvents() {
         const closePr = () => {
             const btn = document.getElementById('pr-modal-submit');
             if (btn && btn.disabled) return; // Prevent closing while operation is in progress
-            prOverlay.classList.remove('active');
+            closeOverlay('pr-modal-overlay');
         };
-        document.getElementById('pr-modal-close').addEventListener('click', closePr);
-        document.getElementById('pr-modal-cancel').addEventListener('click', closePr);
-        prOverlay.addEventListener('click', (e) => { if (e.target.id === 'pr-modal-overlay') closePr(); });
+        bindOverlayClose('pr-modal-overlay', ['pr-modal-close', 'pr-modal-cancel'], closePr);
 
         document.getElementById('pr-modal-submit').addEventListener('click', () => {
             const repoUrl = document.getElementById('pr-repo').value.trim();
@@ -3855,13 +3609,16 @@ function bindEvents() {
             } catch (err) {
                 console.error('Failed to check terminal lock status', err);
             }
+
+            document.getElementById('lock-current-pass').value = '';
+            document.getElementById('lock-new-pass').value = '';
+
+            openOverlay('lock-modal-overlay');
         });
     }
 
-        const closeLock = () => lockOverlay.classList.remove('active');
-        document.getElementById('lock-modal-close').addEventListener('click', closeLock);
-        document.getElementById('lock-modal-cancel').addEventListener('click', closeLock);
-        lockOverlay.addEventListener('click', (e) => { if (e.target.id === 'lock-modal-overlay') closeLock(); });
+        const closeLock = () => closeOverlay('lock-modal-overlay');
+        bindOverlayClose('lock-modal-overlay', ['lock-modal-close', 'lock-modal-cancel'], closeLock);
 
         /* ─── Replay Controls ───────────────────── */
 
@@ -3942,17 +3699,11 @@ function bindEvents() {
 
     document.getElementById('btn-reliability')?.addEventListener('click', openReliabilityDashboard);
 
-    document.getElementById('reliability-modal-close')?.addEventListener('click', closeReliabilityDashboard);
     document.getElementById('reliability-refresh-btn')?.addEventListener('click', () => {
         loadReliabilityDashboard(true);
     });
 
-    const reliabilityOverlay = document.getElementById('reliability-modal-overlay');
-    if (reliabilityOverlay) {
-        reliabilityOverlay.addEventListener('click', (e) => {
-            if (e.target.id === 'reliability-modal-overlay') closeReliabilityDashboard();
-        });
-    }
+    bindOverlayClose('reliability-modal-overlay', ['reliability-modal-close'], closeReliabilityDashboard);
 
     const reliabilitySearch = document.getElementById('reliability-search');
     if (reliabilitySearch) {
@@ -3982,9 +3733,7 @@ function bindEvents() {
     document
         .getElementById('analytics-close')
         ?.addEventListener('click', () => {
-            document
-                .getElementById('analytics-modal-overlay')
-                .classList.remove('active');
+            closeOverlay('analytics-modal-overlay');
         });
 
     document
@@ -3994,15 +3743,16 @@ function bindEvents() {
     document
         .getElementById('workspace-manager-close')
         ?.addEventListener('click', () => {
-            document
-                .getElementById('workspace-manager-overlay')
-                ?.classList.remove('active');
+            closeOverlay('workspace-manager-overlay');
         });
 
     document
         .getElementById('workspace-save-profile')
         ?.addEventListener('click', saveWorkspaceProfile);
 
+    on('workspace-restore-btn', 'click', () => restorePendingWorkspace('full'));
+    on('workspace-safe-btn', 'click', () => restorePendingWorkspace('safe'));
+    on('workspace-clean-btn', 'click', closeWorkspaceRestore);
     document
         .getElementById('workspace-export-btn')
         ?.addEventListener('click', exportWorkspaceSnapshot);
@@ -4185,11 +3935,7 @@ function serializeWorkspace() {
 
 async function persistWorkspace() {
     try {
-        await fetch('/api/workspace', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(serializeWorkspace())
-        });
+        await postJson('/api/workspace', serializeWorkspace(), { label: 'Persist workspace' });
     } catch (err) {
         console.error('Workspace persistence failed:', err);
     }
@@ -4201,8 +3947,7 @@ async function checkWorkspaceRecovery() {
     }
 
     try {
-        const res = await fetch('/api/workspace');
-        const data = await res.json();
+        const data = await fetchJson('/api/workspace', {}, 'Workspace recovery');
         const workspaceDiag = data.diagnostics || {};
 
         if (data.workspace && data.workspace.corrupted) {
@@ -4225,6 +3970,8 @@ async function checkWorkspaceRecovery() {
         const snapshot = data.workspace.workspace;
         renderWorkspaceRestorePreview(data.workspace, workspaceDiag);
 
+        state.pendingWorkspaceSnapshot = snapshot;
+        openOverlay('workspace-restore-overlay');
         document
             .getElementById('workspace-restore-overlay')
             ?.classList.add('active');
@@ -4283,9 +4030,14 @@ function renderWorkspaceRestorePreview(workspacePayload, diagnostics = {}) {
 }
 
 function closeWorkspaceRestore() {
-    document
-        .getElementById('workspace-restore-overlay')
-        ?.classList.remove('active');
+    state.pendingWorkspaceSnapshot = null;
+    closeOverlay('workspace-restore-overlay');
+}
+
+function restorePendingWorkspace(mode) {
+    if (state.pendingWorkspaceSnapshot) {
+        restoreWorkspace(state.pendingWorkspaceSnapshot, mode);
+    }
 }
 
 function sanitizeWorkspaceSnapshot(data) {
@@ -4306,56 +4058,19 @@ function sanitizeWorkspaceSnapshot(data) {
 }
 
 function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = []) {
-    const tabsContainer = document.getElementById('cli-tabs');
-    const cliArea = document.getElementById('cli-area');
-
-    // Remove existing dynamic tabs (keep btn-add-tab)
     document.querySelectorAll('.cli-tab').forEach(tab => {
-        if (!tab.id?.includes('btn-add-tab')) {
-            tab.remove();
-        }
+        if (!tab.id?.includes('btn-add-tab')) tab.remove();
     });
 
-    // Remove existing terminal bodies (keep the original #terminal-body / cli-output)
     document.querySelectorAll('.cli-body').forEach(body => {
-        if (body.id !== 'cli-output') {
-            body.remove();
-        }
+        if (body.id !== 'cli-output') body.remove();
     });
 
-    // Reset state safely
     state.terminals = [];
 
-    // Rebuild each terminal
     terminals.forEach(id => {
-        const tabBtn = document.createElement('div');
-        tabBtn.className = 'cli-tab';
-        tabBtn.dataset.id = id;
-        tabBtn.id = `tab-btn-${id}`;
-        tabBtn.innerHTML = `
-            <span class="cli-tab-title">
-                <span class="dot dot-red"></span>
-                <span class="dot dot-yellow"></span>
-                <span class="dot dot-green"></span>
-                <span>Terminal ${id}</span>
-            </span>
-            <button class="cli-tab-close" title="Close" aria-label="Close terminal">×</button>
-        `;
-        tabBtn.onclick = () => switchTerminal(id);
-        tabBtn.querySelector('.cli-tab-close')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            closeTerminal(id);
-        });
-        tabsContainer.insertBefore(tabBtn, document.getElementById('btn-add-tab'));
-
-        const bodyContainer = document.createElement('div');
-        bodyContainer.className = 'cli-body';
-        bodyContainer.id = `terminal-body-${id}`;
-        bodyContainer.style.display = 'none';
-        bodyContainer.setAttribute('role', 'log');
-        bodyContainer.setAttribute('aria-live', 'polite');
         const snapshot = dataSnapshots?.find(snap => snap.id === id);
-        bodyContainer.innerHTML = safeHTML(snapshot?.content ||
+        insertTerminalShell(id, snapshot?.content ||
             `<div class="cli-welcome">
                 <span class="cli-prompt">$</span>
                 <span class="cli-welcome-text">Restored terminal session.</span>
@@ -4365,22 +4080,15 @@ function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = [
         state.terminals.push(id);
     });
 
-    // Restore pending input from first snapshot
     const firstSnapshot = dataSnapshots?.[0];
     if (firstSnapshot?.pendingInput) {
         const cliInput = document.getElementById('cli-input');
-        if (cliInput) {
-            cliInput.value = firstSnapshot.pendingInput;
-        }
+        if (cliInput) cliInput.value = firstSnapshot.pendingInput;
     }
 
-    // Activate the correct terminal
     switchTerminal(activeTerminalId);
-
-    // Advance nextTerminalId past all restored IDs
     state.nextTerminalId = Math.max(...terminals, 1) + 1;
 }
-
 function restoreWorkspace(snapshot, mode = 'full') {
     try {
         const data =
@@ -4431,8 +4139,7 @@ function restoreWorkspace(snapshot, mode = 'full') {
 
 async function openWorkspaceManager() {
     try {
-        const res = await fetch('/api/workspace/profiles');
-        const data = await res.json();
+        const data = await fetchJson('/api/workspace/profiles', {}, 'Workspace profiles');
 
         const container = document.getElementById('workspace-profile-list');
 
@@ -4450,9 +4157,7 @@ async function openWorkspaceManager() {
             `).join(''));
         }
 
-        document
-            .getElementById('workspace-manager-overlay')
-            .classList.add('active');
+        openOverlay('workspace-manager-overlay');
 
     } catch (err) {
         console.error(err);
@@ -4470,13 +4175,10 @@ async function saveWorkspaceProfile() {
     }
 
     try {
-        const res = await fetch('/api/workspace/profile', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, workspace: serializeWorkspace() })
-        });
-
-        const data = await res.json();
+        const data = await postJson('/api/workspace/profile', {
+            name,
+            workspace: serializeWorkspace()
+        }, { label: 'Save workspace profile' });
 
         if (!data.success) {
             notify(data.error, 'error');
@@ -4545,8 +4247,7 @@ async function importWorkspaceSnapshot(file) {
 
 async function loadWorkspaceProfile(name) {
     try {
-        const res = await fetch(`/api/workspace/profile/${encodeURIComponent(name)}`);
-        const data = await res.json();
+        const data = await fetchJson(`/api/workspace/profile/${encodeURIComponent(name)}`, {}, 'Load workspace profile');
 
         if (!data.success) {
             notify(data.error, 'error');
@@ -4562,9 +4263,7 @@ async function loadWorkspaceProfile(name) {
 
         restoreWorkspace(profile.workspace, 'full');
 
-        document
-            .getElementById('workspace-manager-overlay')
-            ?.classList.remove('active');
+        closeOverlay('workspace-manager-overlay');
 
         notify(`Workspace profile "${name}" loaded.`, 'success');
 
@@ -4581,11 +4280,9 @@ async function deleteWorkspaceProfile(name) {
     }
 
     try {
-        const res = await fetch(`/api/workspace/profile/${encodeURIComponent(name)}`, {
+        const data = await fetchJson(`/api/workspace/profile/${encodeURIComponent(name)}`, {
             method: 'DELETE'
-        });
-
-        const data = await res.json();
+        }, 'Delete workspace profile');
 
         if (!data.success) {
             notify(data.error, 'error');
