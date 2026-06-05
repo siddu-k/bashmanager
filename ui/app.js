@@ -70,6 +70,7 @@ let state = {
     sessionId: null,
     lastSaveTimestamp: 0,
     runningScripts: {},  // termId -> { step, total, command, status }
+    terminalTimerInterval: null,
     reliabilitySummary: null,
     reliabilityFailures: null,
     reliabilityTrends: null,
@@ -1035,8 +1036,48 @@ function cleanupRunningScript(termId) {
     delete state.runningScripts[termId];
 
     if (termId === state.activeTerminalId) {
+        stopTerminalTimer();
         updateRunButton();
         updateProgressTrackerUI();
+    }
+}
+
+function formatElapsedTime(ms) {
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+}
+
+function updateTerminalTimer() {
+    const timer = document.getElementById('terminal-session-timer');
+    if (!timer) return;
+
+    const running = state.runningScripts[state.activeTerminalId];
+    if (!running?.startedAt) {
+        timer.style.display = 'none';
+        timer.textContent = '00:00';
+        return;
+    }
+
+    timer.textContent = formatElapsedTime(Date.now() - running.startedAt);
+    timer.style.display = 'inline-flex';
+}
+
+function startTerminalTimer() {
+    stopTerminalTimer(false);
+    updateTerminalTimer();
+    state.terminalTimerInterval = setInterval(updateTerminalTimer, 1000);
+}
+
+function stopTerminalTimer(reset = true) {
+    if (state.terminalTimerInterval) {
+        clearInterval(state.terminalTimerInterval);
+        state.terminalTimerInterval = null;
+    }
+
+    if (reset) {
+        updateTerminalTimer();
     }
 }
 
@@ -1145,9 +1186,11 @@ async function executeScriptWithArguments(relPath, argumentsText) {
         total: 0,
         command: 'Starting script...',
         status: 'running',
+        startedAt: Date.now(),
         controller: controller
     };
     updateRunButton();
+    startTerminalTimer();
 
     if (termId === state.activeTerminalId) {
         runStatus.textContent = 'Executing...';
@@ -2805,9 +2848,11 @@ function switchTerminal(id) {
         runStatus.textContent = running.aborting ? 'Aborting...' : 'Executing...';
         runStatus.className = 'run-status running';
         resourcePanel.style.display = 'none';
+        startTerminalTimer();
     } else {
         runStatus.textContent = '';
         runStatus.className = 'run-status';
+        stopTerminalTimer();
     }
     updateRunButton();
     highlightTerminalSearch();
