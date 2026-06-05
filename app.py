@@ -2397,18 +2397,19 @@ def parse_script_metadata(filepath):
         with open(filepath, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
-                if line.startswith("# name:"):
-                    name_val = line[7:].strip()
-                    if name_val:
-                        metadata["name"] = name_val
-                elif line.startswith("# desc:"):
-                    metadata["desc"] = line[7:].strip()
-                elif line.startswith("# tag:"):
-                    metadata["tag"] = line[6:].strip()
-                elif line.startswith("# url:"):
-                    metadata["url"] = line[6:].strip()
-                elif not line.startswith("#") and line:
+                if line.startswith('# name:'):
+                name_val = line[7:].strip()
+                if name_val:
+                    metadata['name'] = name_val
+                elif line.startswith('# desc:'):
+                    metadata['desc'] = line[7:].strip()
+                elif line.startswith('# tag:'):
+                    metadata['tag'] = line[6:].strip()
+                elif line.startswith('# url:'):
+                    metadata['url'] = line[6:].strip()
+                elif not line.startswith('#') and line:
                     break
+
     except Exception:  # nosec B110
         pass
     return metadata

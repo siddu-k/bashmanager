@@ -30,6 +30,11 @@
                 <h1>Dev<span class="accent">Shell</span></h1>
             </div>
             <span class="version-badge">v1.0</span>
+            <button class="btn-icon" id="btn-toggle-sidebar" title="Toggle Sidebar" aria-label="Toggle Sidebar" style="margin-left: 8px;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect width="18" height="18" x="3" y="3" rx="2" /><path d="M9 3v16" />
+                </svg>
+            </button>
         </div>
         <div id="header-clock" aria-label="System clock" title="Current Local Time">00:00:00</div>
         </div>
@@ -283,13 +288,9 @@
             <section id="cli-area">
                 <div class="cli-header">
                     <div class="cli-tabs" id="cli-tabs">
-                        <div class="cli-tab active" data-id="1">
-                            <span class="cli-dots" style="margin-right: 6px;">
-                                <span class="dot dot-red"></span>
-                                <span class="dot dot-yellow"></span>
-                                <span class="dot dot-green"></span>
-                            </span>
-                            <span>Terminal 1</span>
+                        <div class="cli-tab active" data-id="1" id="tab-btn-1">
+                            <span class="tab-terminal-icon">>_</span>
+                            <span>Terminal 1</span><span class="tab-status-indicator" id="tab-status-1"></span>
                             <button class="cli-tab-close" title="Close" aria-label="Close terminal"
                                 onclick="event.stopPropagation(); closeTerminal(1)">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24"
@@ -360,6 +361,11 @@
                             <span id="cli-search-results"></span>
                         </div>
                         <span class="run-status" id="run-status"></span>
+                        <button class="btn-icon" id="btn-font-decrease" title="Decrease Font Size" aria-label="Decrease Font Size">
+                            A-
+                        </button>
+                        <button class="btn-icon" id="btn-font-increase" title="Increase Font Size" aria-label="Increase Font Size">
+                            A+
                         <button class="btn-icon" id="btn-lock-terminal" title="Lock Terminal"
                             aria-label="Lock terminal">
                             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
@@ -1129,33 +1135,63 @@ echo 'Hello World'"></textarea>
             <div id="analytics-content">
                 <div class="analytics-grid">
                     <div class="analytics-card">
-                        <h3>Total Runs</h3>
-                        <div id="analytics-total"></div>
+                        <div class="analytics-card-header">
+                            <h3>Total Runs</h3>
+                            <svg class="analytics-card-icon total" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 11h10"/><path d="M7 15h10"/><path d="M7 7h10"/></svg>
+                        </div>
+                        <div class="analytics-card-value total" id="analytics-total">0</div>
+                        <div class="analytics-progress-bar neutral-bar">
+                            <div class="analytics-progress-fill" id="analytics-total-fill" style="width: 100%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-total-rate">All executions</div>
                     </div>
                     <div class="analytics-card">
-                        <h3>Successful</h3>
-                        <div id="analytics-success"></div>
+                        <div class="analytics-card-header">
+                            <h3>Successful</h3>
+                            <svg class="analytics-card-icon success" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                        </div>
+                        <div class="analytics-card-value success" id="analytics-success">0</div>
+                        <div class="analytics-progress-bar success-bar">
+                            <div class="analytics-progress-fill" id="analytics-success-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-success-rate">0% rate</div>
                     </div>
                     <div class="analytics-card">
-                        <h3>Failed</h3>
-                        <div id="analytics-failed"></div>
+                        <div class="analytics-card-header">
+                            <h3>Failed</h3>
+                            <svg class="analytics-card-icon failed" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                        </div>
+                        <div class="analytics-card-value failed" id="analytics-failed">0</div>
+                        <div class="analytics-progress-bar failed-bar">
+                            <div class="analytics-progress-fill" id="analytics-failed-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-failed-rate">0% rate</div>
                     </div>
                     <div class="analytics-card">
-                        <h3>Average Runtime</h3>
-                        <div id="analytics-avg"></div>
+                        <div class="analytics-card-header">
+                            <h3>Average Runtime</h3>
+                            <svg class="analytics-card-icon runtime" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                        </div>
+                        <div class="analytics-card-value runtime" id="analytics-avg">0s</div>
+                        <div class="analytics-progress-bar runtime-bar">
+                            <div class="analytics-progress-fill" id="analytics-avg-fill" style="width: 100%;"></div>
+                        </div>
+                        <div class="analytics-rate-label" id="analytics-avg-rate">Latency average</div>
                     </div>
                 </div>
-                <div class="analytics-section">
-                    <h3>Top Executed Scripts</h3>
-                    <div id="analytics-top-scripts"></div>
-                </div>
-                <div class="analytics-section">
-                    <h3>Slowest Executions</h3>
-                    <div id="analytics-slowest"></div>
-                </div>
-                <div class="analytics-section">
-                    <h3>Recent Failures</h3>
-                    <div id="analytics-failures"></div>
+                <div class="analytics-lists-grid">
+                    <div class="analytics-section">
+                        <h3>Top Executed Scripts</h3>
+                        <div id="analytics-top-scripts"></div>
+                    </div>
+                    <div class="analytics-section">
+                        <h3>Slowest Executions</h3>
+                        <div id="analytics-slowest"></div>
+                    </div>
+                    <div class="analytics-section">
+                        <h3>Recent Failures</h3>
+                        <div id="analytics-failures"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1200,6 +1236,29 @@ echo 'Hello World'"></textarea>
                     <input id="workspace-import-file" type="file" accept="application/json,.json" hidden>
                 </div>
                 <div id="workspace-profile-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Confirm / Alert Modal -->
+    <div id="confirm-modal-overlay" class="modal-overlay">
+        <div class="modal confirm-modal" style="width: 400px; max-width: 90%;">
+            <div class="modal-header">
+                <h2 id="confirm-modal-title">Confirmation</h2>
+                <button class="btn-icon" id="confirm-modal-close" aria-label="Close dialog">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 6 6 18" />
+                        <path d="m6 6 12 12" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="confirm-modal-message" style="margin-bottom: 20px; font-size: 14px; line-height: 1.5; color: var(--text-secondary);"></p>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button class="btn btn-cancel" id="confirm-modal-cancel">Cancel</button>
+                <button class="btn btn-save" id="confirm-modal-confirm">Confirm</button>
             </div>
         </div>
     </div>
