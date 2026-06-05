@@ -63,6 +63,7 @@ let state = {
     activeTerminalId: 1,
     nextTerminalId: 2,
     autoScroll: {},      // per-terminal auto-scroll toggle: { termId: bool }
+    terminalWordWrap: localStorage.getItem('terminal-word-wrap') !== 'false',
     workspaceRestored: false,
     workspaceProfiles: [],
     restoreMode: 'full',
@@ -890,6 +891,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initResizers();
     await restoreSession();
     applyTerminalDensity();
+    applyTerminalWordWrap();
 
     // Initialize auto-scroll as enabled for terminal 1
     state.autoScroll[1] = true;
@@ -2501,6 +2503,29 @@ function updateAutoScrollBtn(termId, isOn) {
     persistWorkspace();
 }
 
+function applyTerminalWordWrap(enabled = state.terminalWordWrap) {
+    state.terminalWordWrap = enabled;
+
+    document.querySelectorAll('.cli-body').forEach(body => {
+        body.classList.toggle('terminal-word-wrap-off', !enabled);
+    });
+
+    const btn = document.getElementById('btn-word-wrap');
+    if (btn) {
+        btn.classList.toggle('active', enabled);
+        btn.title = enabled ? 'Word wrap: On' : 'Word wrap: Off';
+        btn.setAttribute('aria-pressed', String(enabled));
+    }
+}
+
+function toggleTerminalWordWrap() {
+    const enabled = !state.terminalWordWrap;
+    localStorage.setItem('terminal-word-wrap', String(enabled));
+    applyTerminalWordWrap(enabled);
+    persistWorkspace();
+    notify(`Terminal word wrap ${enabled ? 'enabled' : 'disabled'}.`, 'info');
+}
+
 const TERMINAL_DENSITIES = ['compact', 'normal', 'relaxed'];
 
 function getTerminalDensity() {
@@ -3470,6 +3495,12 @@ function bindEvents() {
         btnAutoscroll.addEventListener('click', toggleAutoScroll);
         // Set initial visual state (auto-scroll on by default)
         updateAutoScrollBtn(state.activeTerminalId, true);
+    }
+
+    const btnWordWrap = document.getElementById('btn-word-wrap');
+    if (btnWordWrap) {
+        btnWordWrap.addEventListener('click', toggleTerminalWordWrap);
+        applyTerminalWordWrap();
     }
 
     const densityControl = document.getElementById('terminal-density-control');
