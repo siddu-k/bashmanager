@@ -914,6 +914,12 @@ body {
     word-break: break-word;
 }
 
+.cli-body.terminal-word-wrap-off {
+    overflow-x: auto;
+    white-space: pre;
+    word-break: normal;
+}
+
 .cli-body.terminal-density-compact {
     --terminal-line-height: 1.35;
 }
