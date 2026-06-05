@@ -1749,6 +1749,26 @@ body {
     color: var(--accent-blue);
 }
 
+.terminal-session-splitter {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 18px 0;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: uppercase;
+    user-select: none;
+}
+
+.terminal-session-splitter::before,
+.terminal-session-splitter::after {
+    content: "";
+    flex: 1;
+    border-top: 1px dashed var(--border);
+}
+
 /* Run Status */
 .run-status {
     font-size: 11px;
