@@ -119,6 +119,13 @@ function restoreUnlockedScripts(raw = {}) {
 
 const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
 
+const LOWERCASE_COMMANDS = new Set([
+    'awk', 'bash', 'cat', 'cd', 'chmod', 'clear', 'cp', 'curl', 'docker',
+    'echo', 'find', 'git', 'grep', 'head', 'ls', 'mkdir', 'mv', 'node',
+    'npm', 'npx', 'pnpm', 'pwd', 'python', 'python3', 'rm', 'sed', 'sh',
+    'tail', 'touch', 'yarn'
+]);
+
 // ─── SVG Icons ─────────────────────────────────────────────
 const ICONS = {
     docker: `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg>`,
@@ -1367,6 +1374,39 @@ async function executeScriptWithArguments(relPath, argumentsText) {
         cleanupRunningScript(termId);
         reader = null;
     }
+}
+
+function autocorrectCommandCase(rawCommand) {
+    const match = rawCommand.match(/^(\s*)([^\s]+)([\s\S]*)$/);
+    if (!match) return { command: rawCommand, corrected: false };
+
+    const [, leadingWhitespace, commandToken, rest] = match;
+    const lowerToken = commandToken.toLowerCase();
+
+    if (commandToken === lowerToken || !LOWERCASE_COMMANDS.has(lowerToken)) {
+        return { command: rawCommand, corrected: false };
+    }
+
+    return {
+        command: `${leadingWhitespace}${lowerToken}${rest}`,
+        corrected: true,
+        originalToken: commandToken,
+        correctedToken: lowerToken
+    };
+}
+
+function runCliInputCommand(cliInput) {
+    const rawCmd = cliInput.value.trim();
+    if (!rawCmd) return;
+
+    const correction = autocorrectCommandCase(rawCmd);
+    if (correction.corrected) {
+        cliInput.value = correction.command;
+        notify(`Corrected ${correction.originalToken} to ${correction.correctedToken}.`, 'info');
+    }
+
+    execCommand(correction.command);
+    cliInput.value = '';
 }
 
 async function execCommand(cmd) {
@@ -3505,11 +3545,7 @@ function bindEvents() {
     const cliInput = document.getElementById('cli-input');
     cliInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
-            const cmd = cliInput.value.trim();
-            if (cmd) {
-                execCommand(cmd);
-                cliInput.value = '';
-            }
+            runCliInputCommand(cliInput);
         }
         if (e.key === 'ArrowUp') {
             e.preventDefault();
@@ -3536,11 +3572,7 @@ function bindEvents() {
 
     // Run Command button
     document.getElementById('btn-run-cmd').addEventListener('click', () => {
-        const cmd = cliInput.value.trim();
-        if (cmd) {
-            execCommand(cmd);
-            cliInput.value = '';
-        }
+        runCliInputCommand(cliInput);
     });
 
     // Keyboard shortcuts
