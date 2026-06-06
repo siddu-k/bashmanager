@@ -2153,12 +2153,59 @@ function updateProgressTrackerUI() {
 
 // ─── CLI Helpers ───
 
+function createTerminalEmptyState(message = 'Select a script or run a command to start streaming output.') {
+    const emptyState = document.createElement('div');
+    emptyState.className = 'terminal-empty-state';
+    emptyState.innerHTML = `
+        <div class="terminal-empty-icon" aria-hidden="true">
+            <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" x2="20" y1="19" y2="19" />
+            </svg>
+        </div>
+        <div>
+            <strong>Terminal ready</strong>
+            <span>${escapeHtml(message)}</span>
+        </div>`;
+    return emptyState;
+}
+
+function showTerminalEmptyState(termBody, message) {
+    if (!termBody) return;
+    termBody.innerHTML = '';
+    termBody.appendChild(createTerminalEmptyState(message));
+    termBody.classList.add('terminal-empty');
+    if (termBody.style.display !== 'none') {
+        termBody.style.display = 'flex';
+    }
+}
+
+function syncTerminalEmptyState(termBody) {
+    if (!termBody) return;
+    const hasOutput = !!termBody.querySelector('.cli-output-block');
+    const hasEmptyState = !!termBody.querySelector('.terminal-empty-state, .cli-welcome');
+
+    if (hasOutput) {
+        termBody.classList.remove('terminal-empty');
+        termBody.querySelectorAll('.terminal-empty-state, .cli-welcome').forEach(el => el.remove());
+        return;
+    }
+
+    if (!hasEmptyState) {
+        termBody.appendChild(createTerminalEmptyState());
+    }
+    termBody.classList.add('terminal-empty');
+}
+
 function appendToCli(text, className = '', termId = state.activeTerminalId) {
     const termBody = getTerminalBody(termId);
     if (!termBody) return;
 
-    const welcomeEl = termBody.querySelector('.cli-welcome');
-    if (welcomeEl) welcomeEl.remove();
+    termBody.classList.remove('terminal-empty');
+    termBody.querySelectorAll('.terminal-empty-state, .cli-welcome').forEach(el => el.remove());
+    if (termId === state.activeTerminalId) {
+        termBody.style.display = 'block';
+    }
 
     const line = document.createElement('div');
     line.className = `cli-output-block ${className}`;
@@ -2177,7 +2224,7 @@ function appendToCli(text, className = '', termId = state.activeTerminalId) {
 function clearCli() {
     const termBody = getTerminalBody(state.activeTerminalId);
     if (termBody) {
-        termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
+        showTerminalEmptyState(termBody, 'Terminal cleared. Run another script or command when ready.');
     }
     document.getElementById('run-status').textContent = '';
     document.getElementById('run-status').className = 'run-status';
@@ -2381,6 +2428,8 @@ async function restoreSession() {
 
                 body.appendChild(div);
             }
+
+            syncTerminalEmptyState(body);
         }
 
         switchTerminal(state.activeTerminalId);
@@ -2775,7 +2824,7 @@ function addTerminal() {
     bodyContainer.setAttribute('aria-live', 'polite');
     bodyContainer.id = `terminal-body-${id}`;
     bodyContainer.style.display = 'none';
-    bodyContainer.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>';
+    showTerminalEmptyState(bodyContainer);
 
     document.getElementById('cli-area').insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
     applyTerminalDensity();
@@ -2793,7 +2842,10 @@ function switchTerminal(id) {
 
     document.querySelectorAll('.cli-body').forEach(b => b.style.display = 'none');
     const activeBody = getTerminalBody(id);
-    if (activeBody) activeBody.style.display = 'block';
+    if (activeBody) {
+        syncTerminalEmptyState(activeBody);
+        activeBody.style.display = activeBody.classList.contains('terminal-empty') ? 'flex' : 'block';
+    }
 
     // Sync auto-scroll button to the newly active terminal's state
     updateAutoScrollBtn(id, state.autoScroll[id] !== false);

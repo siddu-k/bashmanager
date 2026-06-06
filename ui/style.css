@@ -914,6 +914,53 @@ body {
     word-break: break-word;
 }
 
+.cli-body.terminal-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.terminal-empty-state {
+    width: min(460px, 100%);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 18px;
+    border: 1px dashed var(--border-bright);
+    border-radius: 8px;
+    background: rgba(15, 17, 21, 0.82);
+    color: var(--text-secondary);
+}
+
+.terminal-empty-icon {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    background: var(--accent-glow);
+    color: var(--accent);
+}
+
+.terminal-empty-state strong,
+.terminal-empty-state span {
+    display: block;
+}
+
+.terminal-empty-state strong {
+    margin-bottom: 4px;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 13px;
+}
+
+.terminal-empty-state span {
+    font-family: var(--font-ui);
+    font-size: 12px;
+}
+
 .cli-body.terminal-density-compact {
     --terminal-line-height: 1.35;
 }
