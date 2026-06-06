@@ -890,6 +890,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initResizers();
     await restoreSession();
     applyTerminalDensity();
+    updateTerminalMetrics();
 
     // Initialize auto-scroll as enabled for terminal 1
     state.autoScroll[1] = true;
@@ -996,6 +997,23 @@ async function fetchScriptContent(relPath, password = '') {
 function getTerminalBody(termId = state.activeTerminalId) {
     return document.getElementById(`terminal-body-${termId}`)
         || (termId === 1 ? document.getElementById('terminal-body') : null);
+}
+
+function updateTerminalMetrics(termId = state.activeTerminalId) {
+    const badge = document.getElementById('terminal-metrics-badge');
+    if (!badge) return;
+
+    const termBody = getTerminalBody(termId);
+    const outputText = termBody
+        ? Array.from(termBody.querySelectorAll('.cli-output-block'))
+            .map(el => el.textContent || '')
+            .join('\n')
+        : '';
+    const lineCount = outputText ? outputText.split(/\r?\n/).length : 0;
+    const charCount = outputText.length;
+
+    badge.textContent = `${lineCount} ${lineCount === 1 ? 'line' : 'lines'} / ${charCount} chars`;
+    badge.title = `Terminal ${termId} output size: ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}, ${charCount} characters`;
 }
 
 function updateRunButton() {
@@ -2164,6 +2182,9 @@ function appendToCli(text, className = '', termId = state.activeTerminalId) {
     line.className = `cli-output-block ${className}`;
     line.textContent = text;
     termBody.appendChild(line);
+    if (termId === state.activeTerminalId) {
+        updateTerminalMetrics(termId);
+    }
 
     // Only auto-scroll if enabled for this terminal (default: true)
     if (state.autoScroll[termId] !== false) {
@@ -2179,6 +2200,7 @@ function clearCli() {
     if (termBody) {
         termBody.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal cleared.</span></div>';
     }
+    updateTerminalMetrics(state.activeTerminalId);
     document.getElementById('run-status').textContent = '';
     document.getElementById('run-status').className = 'run-status';
     document.getElementById('resource-panel').style.display = 'none';
@@ -2811,6 +2833,7 @@ function switchTerminal(id) {
     }
     updateRunButton();
     highlightTerminalSearch();
+    updateTerminalMetrics(id);
 
     updateProgressTrackerUI();
     persistWorkspace();
