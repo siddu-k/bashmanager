@@ -11,6 +11,7 @@ body:
       label: Short description
       description: Brief summary of the feature
       placeholder: Brief summary of the feature 
+    validations:
       required: true
 
   - type: textarea
@@ -19,6 +20,7 @@ body:
       label: Describe the improvements you would like to make
       description: Explain the proposed change or new feature.
       placeholder: Describe the improvements here
+    validations:
       required: true
 
   - type: textarea
@@ -27,6 +29,7 @@ body:
       label: Why is this needed?
       description: Explain the problem this solves or the benefit it provides.
       placeholder: Why do we need this?
+    validations:
       required: true
 
   - type: textarea
@@ -57,11 +60,8 @@ body:
       description: Confirm the following before submitting.
       options:
         - label: I have read the contributing guidelines
-          value: read_contributing
         - label: I have checked for duplicate issues
-          value: checked_duplicates
         - label: I would like to work on a pull request to implement this
-          value: will_work_on_pr
 
   - type: textarea
     id: additional

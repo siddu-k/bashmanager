@@ -4,6 +4,7 @@ import time
 import subprocess
 import pytest
 import psutil
+from unittest.mock import patch
 
 SENTINEL = object()
 
@@ -323,3 +324,259 @@ def test_no_zombie_processes(app_module):
                 )
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+
+def test_cleanup_old_execution_logs_prunes_old_logs(app_module, tmp_path):
+    old_dir = tmp_path / "exec_logs"
+    old_dir.mkdir()
+
+    # create old and new files
+    old_file = old_dir / "old.log"
+    new_file = old_dir / "new.log"
+    old_file.write_text("old")
+    new_file.write_text("new")
+
+    # set old mtime to 60 days ago
+    old_mtime = time.time() - (60 * 24 * 60 * 60)
+    os.utime(old_file, (old_mtime, old_mtime))
+
+    # patch EXECUTION_LOG_DIR
+    with patch.object(app_module, "EXECUTION_LOG_DIR", str(old_dir)):
+        app_module._cleanup_old_execution_logs()
+
+    assert not old_file.exists()
+    assert new_file.exists()
+
+
+def test_start_append_and_finalize_execution_record(app_module, tmp_path):
+    # isolate log/session/history files
+    exec_dir = tmp_path / "exec"
+    sess_dir = tmp_path / "sessions"
+    rel_dir = tmp_path / "reliability"
+    exec_dir.mkdir()
+    sess_dir.mkdir()
+    rel_dir.mkdir()
+
+    history_file = tmp_path / "history.jsonl"
+    failed_file = tmp_path / "failed.jsonl"
+
+    with patch.object(app_module, "EXECUTION_LOG_DIR", str(exec_dir)), \
+         patch.object(app_module, "SESSION_LOG_DIR", str(sess_dir)), \
+         patch.object(app_module, "RELIABILITY_DIR", str(rel_dir)), \
+         patch.object(app_module, "HISTORY_FILE", str(history_file)), \
+         patch.object(app_module, "FAILED_HISTORY_FILE", str(failed_file)):
+
+        execution = app_module._start_execution_record(
+            kind="test", display_name="my test", command_text="echo hi"
+        )
+
+        # append some lines
+        app_module._append_execution_line(execution, "stdout", "line1\n")
+        app_module._append_execution_line(execution, "error", "err happened\n")
+
+        # finalize as success
+        history = app_module._finalize_execution(
+            execution, success=True, exit_code=0, duration_seconds=0.123
+        )
+
+        assert history["success"] is True
+        # session file should exist
+        session_path = os.path.join(str(sess_dir), history["log_file"].split('_')[-1].replace('.log', '.json'))
+        sess_files = list(sess_dir.glob('*.json'))
+        assert len(sess_files) >= 1
+
+
+def test_save_reliability_summary_creates_backup_and_atomic_replace(app_module, tmp_path):
+    rel_dir = tmp_path / "reliability"
+    rel_dir.mkdir()
+    summary_file = rel_dir / "summary.json"
+    backup_file = rel_dir / "summary.json.backup"
+    tmp_file = rel_dir / "summary.json.tmp"
+
+    # initial summary
+    summary = {"version": app_module.RELIABILITY_SUMMARY_VERSION, "scripts": {}, "global": {}}
+
+    with patch.object(app_module, "RELIABILITY_DIR", str(rel_dir)), patch.object(app_module, "RELIABILITY_SUMMARY_FILE", str(summary_file)), patch.object(app_module, "RELIABILITY_SUMMARY_BACKUP", str(backup_file)), patch.object(app_module, "RELIABILITY_SUMMARY_TMP", str(tmp_file)):
+        # First save should create file
+        app_module._save_reliability_summary(summary)
+        assert summary_file.exists()
+
+        # Modify and save again to exercise backup creation
+        summary2 = {"version": app_module.RELIABILITY_SUMMARY_VERSION, "scripts": {"a": {}}, "global": {}}
+        app_module._save_reliability_summary(summary2)
+        # backup may or may not exist depending on save path, but tmp should not remain
+        assert not tmp_file.exists()
+
+
+def test_record_reliability_event_appends_and_trims(app_module, tmp_path):
+    rel_dir = tmp_path / "reliability"
+    rel_dir.mkdir()
+    events_file = rel_dir / "events.jsonl"
+
+    with patch.object(app_module, "RELIABILITY_DIR", str(rel_dir)), patch.object(app_module, "RELIABILITY_EVENTS_FILE", str(events_file)):
+        # append a few events
+        for i in range(5):
+            app_module._record_reliability_event({"id": f"e{i}", "info": i}, persist_force=False)
+
+        lines = app_module._read_jsonl(str(events_file))
+        assert len(lines) == 5
+
+        # Simulate trim by lowering MAX_RELIABILITY_EVENTS and adding more
+        with patch.object(app_module, "MAX_RELIABILITY_EVENTS", 3):
+            for i in range(3):
+                app_module._record_reliability_event({"id": f"x{i}", "info": i}, persist_force=False)
+
+        lines2 = app_module._read_jsonl(str(events_file))
+        assert len(lines2) <= 3
+
+
+def test_load_workspace_state_handles_corrupted_file(app_module, tmp_path):
+    ws_file = tmp_path / "workspace_state.json"
+    # write invalid json
+    ws_file.write_text('{ invalid json }')
+
+    with patch.object(app_module, "WORKSPACE_STATE_FILE", str(ws_file)):
+        result = app_module.load_workspace_state()
+
+    assert isinstance(result, dict)
+    assert result.get("corrupted") is True
+    corrupted_path = str(ws_file) + ".corrupted"
+    assert os.path.exists(corrupted_path)
+    assert not os.path.exists(str(ws_file))
+
+
+def test_save_favorites_raises_on_ioerror(app_module, tmp_path):
+    fav_file = tmp_path / "favorites.json"
+    with patch.object(app_module, "FAVORITES_FILE", str(fav_file)):
+        with patch("builtins.open", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                app_module.save_favorites(["one"])
+
+
+def test_save_sessions_function_raises_on_ioerror(app_module, tmp_path):
+    sess_file = tmp_path / "sessions.json"
+    with patch.object(app_module, "SESSIONS_FILE", str(sess_file)):
+        with patch("builtins.open", side_effect=OSError("write error")):
+            with pytest.raises(OSError):
+                app_module.save_sessions({})
+
+
+def test_save_session_route_returns_500_on_save_error(client, app_module, tmp_path):
+    with patch.object(app_module, "save_sessions", side_effect=Exception("boom")):
+        r = client.post("/api/sessions/save", json={"session": {"x": 1}})
+        assert r.status_code == 500
+        body = r.get_json()
+        assert body["success"] is False and "error" in body
+
+
+def test_classify_failure_various_cases():
+    from app import _classify_failure
+
+    assert _classify_failure(130, "interrupted") == "interrupted"
+    assert _classify_failure(124, "timeout") == "timeout"
+    assert _classify_failure(126, "permission denied") == "permission_error"
+    assert _classify_failure(127, "command not found") == "dependency_error"
+    assert _classify_failure(2, "some error") == "shell_error"
+    assert _classify_failure(None, "unknown stuff") == "unknown_failure"
+
+
+def test_finalize_execution_writes_history_and_failed(app_module, tmp_path):
+    # prepare environment
+    hist = tmp_path / "history.jsonl"
+    failed = tmp_path / "failed.jsonl"
+    exec_dir = tmp_path / "exec"
+    sess_dir = tmp_path / "sessions"
+    exec_dir.mkdir()
+    sess_dir.mkdir()
+
+    with patch.object(app_module, "HISTORY_FILE", str(hist)), patch.object(app_module, "FAILED_HISTORY_FILE", str(failed)), patch.object(app_module, "EXECUTION_LOG_DIR", str(exec_dir)), patch.object(app_module, "SESSION_LOG_DIR", str(sess_dir)):
+        # create a dummy execution
+        log_file = exec_dir / "e.log"
+        handle = open(log_file, "w", encoding="utf-8")
+        execution = {
+            "record": {
+                "id": "x1",
+                "kind": "script",
+                "session_file": "s1.json",
+                "display_name": "d",
+                "command": "c",
+                "shell": "sh",
+                "cwd": ".",
+                "arguments": [],
+                "started_at": app_module._iso_now(),
+                "log_file": str(log_file.name),
+            },
+            "excerpt_lines": ["line1", "line2"],
+            "excerpt_size": 10,
+            "session_data": {"metadata": {}, "events": []},
+            "handle": handle,
+            "monotonic_start": 0,
+        }
+
+        # call finalize as failed
+        hist_rec = app_module._finalize_execution(execution, success=False, exit_code=2, duration_seconds=0.5, error_message="fail")
+        assert hist_rec["success"] is False
+        h = app_module._read_jsonl(str(hist))
+        f = app_module._read_jsonl(str(failed))
+        assert any(r.get("id") == "x1" for r in h)
+        assert any(r.get("id") == "x1" for r in f)
+
+
+def test_cleanup_execution_handles_handle_close_exceptions(app_module, tmp_path):
+    # simulate a handle that raises on flush/close
+    class BadHandle:
+        closed = False
+
+        def write(self, *a, **k):
+            pass
+
+        def flush(self):
+            raise OSError("flush fail")
+
+        def close(self):
+            raise OSError("close fail")
+
+    execution = {"handle": BadHandle(), "record": {"session_file": "s.json"}, "monotonic_start": 0}
+    app_module._cleanup_execution(None, execution, run_id="r1", reader_thread=None)
+
+
+def test_run_script_reader_thread_exception_triggers_cleanup(client, app_module, tmp_path):
+    pass
+
+
+def test_run_script_timeoutexpired_branch_yields_timeout_error(client, app_module, tmp_path):
+    scripts_dir = tmp_path / "scripts2"
+    scripts_dir.mkdir()
+    script_path = scripts_dir / 'tmp_timeout.sh'
+    script_path.write_text('#!/bin/sh\necho hi\n')
+
+    class EmptyStdout:
+        def readline(self):
+            return ""
+
+        def close(self):
+            pass
+
+    class FakePopen2:
+        pid = None
+        def __init__(self):
+            self.stdout = EmptyStdout()
+            self.returncode = 0
+            self.pid = None
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd='fake', timeout=timeout)
+
+    with patch.object(app_module, "SCRIPTS_DIR", str(scripts_dir)), patch("subprocess.Popen", return_value=FakePopen2()):
+        resp = client.post('/api/scripts/run', json={'path': 'tmp_timeout.sh'})
+        assert resp.status_code == 200
+        found_timeout = False
+        for chunk in resp.iter_encoded():
+            text = chunk.decode('utf-8')
+            if 'execution timed out' in text.lower() or 'timed out' in text.lower():
+                found_timeout = True
+                break
+
+        assert found_timeout

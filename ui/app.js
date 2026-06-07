@@ -13,23 +13,29 @@ const API = {
     delete: '/api/scripts/delete',
     favorite: '/api/scripts/favorite',
     exec: '/api/exec',
+    exec_check_lock: '/api/exec/check_lock',
     lock: '/api/scripts/lock',
     import_github: '/api/scripts/import_github',
     pr: '/api/git/pr',
     history: '/api/history',
     history_export: '/api/history/export',
+    history_clear: '/api/history/clear',
     kill: '/api/scripts/kill',
+    command_history_clear: '/api/command_history/clear',
     reliability_summary: '/api/reliability/summary',
     reliability_failures: '/api/reliability/failures',
     reliability_trends: '/api/reliability/trends',
     reliability_recommendations: '/api/reliability/recommendations',
     reliability_diagnostics: '/api/reliability/diagnostics',
+    workspace_export: '/api/workspace/export',
+    workspace_import: '/api/workspace/import',
 };
 
 // ─── State ────────────────────────────────────────────────
 let state = {
     scripts: {},
     activeScript: null,
+    lockTarget: null,
     expandedCategories: new Set(),
     expandedRoot: true,
     searchQuery: '',
@@ -396,7 +402,7 @@ function renderReliabilityEmpty(message = 'No data available.', variant = 'empty
 function setReliabilityPanelContent(element, html, emptyMessage, variant = 'empty') {
     if (!element) return;
     element.innerHTML = (html && html.trim())
-        ? html
+        ? safeHTML(html)
         : renderReliabilityEmpty(emptyMessage, variant);
 }
 
@@ -883,6 +889,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     bindEvents();
     initResizers();
     await restoreSession();
+    applyTerminalDensity();
 
     // Initialize auto-scroll as enabled for terminal 1
     state.autoScroll[1] = true;
@@ -1075,6 +1082,50 @@ async function abortScriptRun(termId = state.activeTerminalId) {
 }
 
 async function runScript(relPath) {
+    // Show arguments modal before running the script
+    showArgumentsModal(relPath);
+}
+
+function showArgumentsModal(relPath) {
+    const overlay = document.getElementById('arguments-modal-overlay');
+    const input = document.getElementById('arguments-input');
+    const preview = document.getElementById('arguments-preview');
+    const previewList = document.getElementById('arguments-preview-list');
+    
+    // Store script path in overlay for retrieval in run handler
+    overlay._scriptPath = relPath;
+    
+    input.value = '';
+    preview.style.display = 'none';
+    previewList.innerHTML = '';
+    
+    // Setup input change listener for preview
+    input.onchange = input.oninput = () => {
+        const text = input.value.trim();
+        if (!text) {
+            preview.style.display = 'none';
+            return;
+        }
+        
+        const args = text.split('\n').filter(line => line.trim()).map(line => line.trim());
+        previewList.innerHTML = args.map((arg, idx) => `<div style="margin: 4px 0;"><strong>[${idx}]:</strong> <code>${escapeHtml(arg)}</code></div>`).join('');
+        preview.style.display = '';
+    };
+    
+    overlay.classList.add('active');
+}
+
+function closeArgumentsModal() {
+    const overlay = document.getElementById('arguments-modal-overlay');
+    overlay.classList.remove('active');
+}
+
+async function executeScriptWithArguments(relPath, argumentsText) {
+    closeArgumentsModal();
+    
+    // Parse arguments from textarea
+    const arguments_list = argumentsText.trim().split('\n').filter(line => line.trim()).map(line => line.trim());
+    
     const termId = state.activeTerminalId;
     if (state.runningScripts[termId]) return;
     const runStatus = document.getElementById('run-status');
@@ -1086,6 +1137,7 @@ async function runScript(relPath) {
     state.runningScripts[termId] = {
         run_id: null,
         relPath,
+        arguments: arguments_list,
         abortRequested: false,
         aborting: false,
         killSent: false,
@@ -1103,7 +1155,7 @@ async function runScript(relPath) {
         resourcePanel.style.display = 'none';
     }
 
-    appendToCli(`$ Running script: ${relPath}`, 'system', termId);
+    appendToCli(`$ Running script: ${relPath}` + (arguments_list.length > 0 ? ` [with ${arguments_list.length} argument(s)]` : ''), 'system', termId);
     if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('info', `▶ Running script: ${relPath}`, 'script');
 
     if (termId === state.activeTerminalId) {
@@ -1115,7 +1167,7 @@ async function runScript(relPath) {
         const res = await fetch(API.run, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath) }),
+            body: JSON.stringify({ path: relPath, password: getUnlockPassword(relPath), arguments: arguments_list }),
             signal: controller.signal
         });
 
@@ -1129,7 +1181,16 @@ async function runScript(relPath) {
             cleanupRunningScript(termId);
             return;
         }
-
+        if (res.status === 404) {
+            appendToCli('Error: Script file not found. It may have been deleted or moved.', 'error', termId);
+            if (typeof DebuggerConsole !== 'undefined') DebuggerConsole.addEntry('error', 'Script file not found — it may have been deleted or moved', 'script');
+            if (termId === state.activeTerminalId) {
+                runStatus.textContent = 'Not Found';
+                runStatus.className = 'run-status error';
+            }
+            cleanupRunningScript(termId);
+            return;
+        }
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
             throw new Error(data.error || `Script run failed with HTTP ${res.status}`);
@@ -1322,8 +1383,29 @@ async function execCommand(cmd) {
         const res = await fetch(API.exec, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ command: cmd }),
+            body: JSON.stringify({ 
+                command: cmd,
+                password: getUnlockPassword('__terminal__')
+            }),
         });
+
+        if (res.status === 401) {
+            const pwd = window.prompt('Terminal is locked. Please enter the terminal password:');
+            if (pwd !== null) {
+                markScriptUnlocked('__terminal__', pwd);
+                // Re-run without duplicating history
+                state.cmdHistory.pop();
+                state.cmdHistoryIndex--;
+                const cliBody = getTerminalBody(termId);
+                if (cliBody && cliBody.lastElementChild) {
+                    cliBody.removeChild(cliBody.lastElementChild); // Remove '$ cmd'
+                }
+                execCommand(cmd);
+            } else {
+                appendToCli('Error: Terminal is locked.', 'error', termId);
+            }
+            return;
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -1420,7 +1502,7 @@ function renderHistoryPage() {
     const visibleEntries = entries.slice(0, visibleCount);
     const hasMore = visibleCount < entries.length;
 
-    list.innerHTML = visibleEntries.map(entry => {
+    list.innerHTML = safeHTML(visibleEntries.map(entry => {
         const statusClass = entry.status === 'failed' ? 'failed' : 'success';
         const kindLabel = entry.kind === 'script' ? 'Script' : 'Command';
         const duration = formatHistoryDuration(entry);
@@ -1456,7 +1538,7 @@ function renderHistoryPage() {
                 <div class="history-entry-excerpt">${excerpt}</div>
             </article>
         `;
-    }).join('');
+    }).join(''));
 
     if (hasMore) {
         const loadMore = document.createElement('button');
@@ -1826,7 +1908,7 @@ async function executePR(relPath, branch, message, repoUrl) {
                     `Successfully pushed to branch '${data.branch}'.\n\nWould you like to open the Pull Request page on GitHub?`
                 )
             ) {
-                window.open(data.pr_url, '_blank');
+                window.open(data.pr_url, '_blank', 'noopener,noreferrer');
             }
         } else {
             if (typeof DebuggerConsole !== 'undefined') {
@@ -2419,6 +2501,35 @@ function updateAutoScrollBtn(termId, isOn) {
     persistWorkspace();
 }
 
+const TERMINAL_DENSITIES = ['compact', 'normal', 'relaxed'];
+
+function getTerminalDensity() {
+    const savedDensity = localStorage.getItem('terminalLineDensity');
+    return TERMINAL_DENSITIES.includes(savedDensity) ? savedDensity : 'normal';
+}
+
+function applyTerminalDensity(density = getTerminalDensity()) {
+    const safeDensity = TERMINAL_DENSITIES.includes(density) ? density : 'normal';
+
+    document.querySelectorAll('.cli-body').forEach(body => {
+        TERMINAL_DENSITIES.forEach(option => body.classList.remove(`terminal-density-${option}`));
+        body.classList.add(`terminal-density-${safeDensity}`);
+    });
+
+    document.querySelectorAll('.density-option').forEach(button => {
+        const active = button.dataset.density === safeDensity;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', String(active));
+    });
+}
+
+function setTerminalDensity(density) {
+    if (!TERMINAL_DENSITIES.includes(density)) return;
+    localStorage.setItem('terminalLineDensity', density);
+    applyTerminalDensity(density);
+    notify(`Terminal density set to ${density}.`, 'info');
+}
+
 function clearCli() {
     const termBody = getTerminalBody(state.activeTerminalId);
     if (termBody) {
@@ -2667,6 +2778,7 @@ function addTerminal() {
     bodyContainer.innerHTML = '<div class="cli-welcome"><span class="cli-prompt">$</span> <span class="cli-welcome-text">Terminal ready.</span></div>';
 
     document.getElementById('cli-area').insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
+    applyTerminalDensity();
     switchTerminal(id);
     persistWorkspace();
     saveSessionDebounced();
@@ -2822,8 +2934,8 @@ function renderSidebar() {
         const isExpanded = state.expandedCategories.has(cat) || !!query;
 
         html += `
-            <div class="category">
-                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" onclick="toggleCategory('${cat}')" onkeydown="handleKeyboardAction(event, () => toggleCategory('${cat}'))">
+            <div class="category-section" data-category="${escapeAttr(cat)}">
+                <div class="category-header" role="button" tabindex="0" aria-expanded="${isExpanded}" data-sidebar-action="toggle-category" data-category="${escapeAttr(cat)}">
                     <span class="category-arrow ${isExpanded ? 'expanded' : ''}">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                     </span>
@@ -2838,14 +2950,22 @@ function renderSidebar() {
 
             return `
                         <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                            onclick="selectScript('${s.relative_path}')"
-                            onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))"
-                            title="${escapeAttr(s.desc)}">
+                            data-sidebar-action="select-script"
+                            data-script-path="${escapeAttr(s.relative_path)}"
+                            title="${escapeAttr(s.desc)}"
+                            data-file="${escapeAttr(s.file)}"
+                            data-path="${escapeAttr(s.relative_path)}"
+                            data-tag="${escapeAttr(s.tag || '')}"
+                            data-desc="${escapeAttr(s.desc || '')}">
                             ${lockIcon}
                             <span class="script-item-icon" style="${s.locked ? 'display:none;' : ''}">${ICONS.script}</span>
                             <span class="script-item-name">${escapeHtml(displayName)}</span>
                             <span class="script-item-fav ${s.favorite ? 'visible' : ''}"
-                                  onclick="event.stopPropagation(); toggleFavorite('${s.relative_path}')">
+                                  role="button"
+                                  tabindex="0"
+                                  aria-label="Toggle favorite"
+                                  data-sidebar-action="toggle-favorite"
+                                  data-script-path="${escapeAttr(s.relative_path)}">
                                 ${ICONS.favorite}
                             </span>
                         </li>
@@ -2863,9 +2983,9 @@ function renderSidebar() {
     const rootArrowClass = rootExpanded ? 'expanded' : '';
     const rootChildrenHtml = html || '<div style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">No scripts found. Create one to get started.</div>';
 
-    tree.innerHTML = `
+    tree.innerHTML = safeHTML(`
         <div class="root-folder">
-            <div class="category-header root-header" role="button" tabindex="0" aria-expanded="${rootExpanded}" onclick="toggleRoot()" onkeydown="handleKeyboardAction(event, () => toggleRoot())">
+            <div class="category-header root-header" role="button" tabindex="0" aria-expanded="${rootExpanded}" data-sidebar-action="toggle-root">
                 <span class="category-arrow ${rootArrowClass}">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
                 </span>
@@ -2877,21 +2997,21 @@ function renderSidebar() {
                 ${rootChildrenHtml}
             </div>
         </div>
-    `;
+    `);
     countEl.textContent = totalScripts;
 
     if (favScripts.length > 0) {
         favsSection.style.display = '';
-        favsList.innerHTML = favScripts.map(s => {
+        favsList.innerHTML = safeHTML(favScripts.map(s => {
             const displayName = ((s.name || '') + '').trim() || s.file || (s.relative_path || '').split('/').pop() || '';
             return `
             <li class="script-item ${state.activeScript === s.relative_path ? 'active' : ''}" role="button" tabindex="0"
-                onclick="selectScript('${s.relative_path}')"
-                onkeydown="handleKeyboardAction(event, () => selectScript('${s.relative_path}'))">
+                data-sidebar-action="select-script"
+                data-script-path="${escapeAttr(s.relative_path)}">
                 <span class="script-item-icon" style="color: var(--accent-yellow); stroke: var(--accent-yellow);">${ICONS.favorite}</span>
                 <span class="script-item-name">${escapeHtml(displayName)}</span>
             </li>
-        `}).join('');
+        `}).join(''));
     } else {
         favsSection.style.display = 'none';
     }
@@ -3079,6 +3199,45 @@ function toggleRoot() {
     renderSidebar();
 }
 
+function handleSidebarAction(event) {
+    const target = event.target.closest('[data-sidebar-action]');
+    if (!target) return;
+
+    const sidebarHost = event.currentTarget;
+    if (sidebarHost && !sidebarHost.contains(target)) return;
+
+    const action = target.dataset.sidebarAction;
+    if (action === 'toggle-favorite') {
+        event.stopPropagation();
+        if (target.dataset.scriptPath) toggleFavorite(target.dataset.scriptPath);
+        return;
+    }
+
+    if (action === 'select-script' && target.dataset.scriptPath) {
+        selectScript(target.dataset.scriptPath);
+        return;
+    }
+
+    if (action === 'toggle-category' && target.dataset.category) {
+        toggleCategory(target.dataset.category);
+        return;
+    }
+
+    if (action === 'toggle-root') {
+        toggleRoot();
+    }
+}
+
+function handleSidebarKeydown(event) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+
+    const target = event.target.closest('[data-sidebar-action]');
+    if (!target) return;
+
+    event.preventDefault();
+    handleSidebarAction(event);
+}
+
 function handleKeyboardAction(event, callback) {
     if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
@@ -3150,6 +3309,51 @@ function bindEvents() {
     if (cliSearchInput) {
         cliSearchInput.addEventListener('input', () => highlightTerminalSearch());
     }
+
+    const historyModalSearch = document.getElementById('history-modal-search');
+    if (historyModalSearch) {
+        let historyFilterDebounceTimer;
+        historyModalSearch.addEventListener('input', (e) => {
+            clearTimeout(historyFilterDebounceTimer);
+            historyFilterDebounceTimer = setTimeout(() => {
+                const searchCriteriaText = e.target.value.toLowerCase().trim();
+                const historicalItemCards = document.querySelectorAll(
+                    '#history-modal-overlay .analytics-item, ' +
+                    '#history-modal-overlay .replay-line, ' +
+                    '#history-modal-overlay table tbody tr, ' +
+                    '#history-modal-overlay .history-item'
+                );
+                
+                historicalItemCards.forEach(cardRow => {
+                    const contentPayloadString = cardRow.textContent.toLowerCase();
+                    if (contentPayloadString.includes(searchCriteriaText)) {
+                        cardRow.style.display = ''; 
+                    } else {
+                        cardRow.style.display = 'none'; 
+                    }
+                });
+            }, 150);
+        });
+    }
+
+    // ─── TERMINAL FLOATING QUICK-SCROLL ACTIONS (#116) ───
+    const terminalBodyContainer = document.getElementById('terminal-body');
+    const scrollUpTriggerBtn = document.getElementById('scroll-to-top-btn');
+    const scrollDownTriggerBtn = document.getElementById('scroll-to-bottom-btn');
+
+    if (terminalBodyContainer) {
+        if (scrollUpTriggerBtn) {
+            scrollUpTriggerBtn.addEventListener('click', () => {
+                terminalBodyContainer.scrollTo({ top: 0, behavior: 'smooth' });
+            });
+        }
+        if (scrollDownTriggerBtn) {
+            scrollDownTriggerBtn.addEventListener('click', () => {
+                terminalBodyContainer.scrollTo({ top: terminalBodyContainer.scrollHeight, behavior: 'smooth' });
+            });
+        }
+    }
+
     function scoreMatch(query, candidate) {
         const normalizedQuery = String(query || '').toLowerCase();
         const normalizedCandidate = String(candidate || '').toLowerCase();
@@ -3176,89 +3380,63 @@ function bindEvents() {
         return queryIndex === normalizedQuery.length;
     }
 
-    // Real-Time Sidebar Script Filter Logic (Fixed Variant)
+    // Real-Time Sidebar Script Filter Logic
     const scriptSearchBar = document.getElementById('script-search-bar');
     if (scriptSearchBar) {
         scriptSearchBar.addEventListener('input', (e) => {
             const filterText = e.target.value.toLowerCase().trim();
-            const categoryLists = document.querySelectorAll('#category-tree .script-list');
-            const categoryContainers = Array.from(document.querySelectorAll('#category-tree > .category-header'));
+            const scriptItems = document.querySelectorAll('#category-tree .script-item');
 
-            if (filterText === '') {
-                const scriptItems = document.querySelectorAll('#category-tree .script-item');
-                scriptItems.forEach(item => {
-                    item.style.display = 'flex';
-                    item.removeAttribute('data-score');
-                });
-
-                categoryLists.forEach(list => {
-                    list.style.maxHeight = '';
-                });
-
-                categoryContainers.forEach(container => {
-                    container.style.display = '';
-                });
-
-                return;
-            }
-
-            const scriptItems = Array.from(document.querySelectorAll('#category-tree .script-item'));
-            const visibleByParent = new Map();
-            const bestScoreByParent = new Map();
-
+            // 1. Match item against five fields
             scriptItems.forEach(item => {
                 const scriptNameEl = item.querySelector('.script-item-name');
                 if (!scriptNameEl) return;
 
-                const scriptName = scriptNameEl.textContent.toLowerCase();
+                const name = scriptNameEl.textContent.toLowerCase();
+                const filename = (item.getAttribute('data-file') || '').toLowerCase();
+                const path = (item.getAttribute('data-path') || '').toLowerCase();
+                const tag = (item.getAttribute('data-tag') || '').toLowerCase();
+                const desc = (item.getAttribute('data-desc') || '').toLowerCase();
 
-                if (!fuzzyMatch(filterText, scriptName)) {
+                if (
+                    name.includes(filterText) ||
+                    filename.includes(filterText) ||
+                    path.includes(filterText) ||
+                    tag.includes(filterText) ||
+                    desc.includes(filterText)
+                ) {
+                    item.style.display = 'flex';
+                } else {
                     item.style.display = 'none';
-                    item.removeAttribute('data-score');
-                    return;
                 }
+            });
 
-                const score = scoreMatch(filterText, scriptName);
-                item.dataset.score = String(score);
-                item.style.display = 'flex';
-
-                const parent = item.parentElement;
-                if (!visibleByParent.has(parent)) {
-                    visibleByParent.set(parent, []);
+            // 2. Hide/show category wrappers (.category-section) based on visibility of their script items
+            const categorySections = document.querySelectorAll('#category-tree .category-section');
+            categorySections.forEach(section => {
+                const items = section.querySelectorAll('.script-item');
+                let hasVisible = false;
+                items.forEach(item => {
+                    if (item.style.display !== 'none') {
+                        hasVisible = true;
+                    }
+                });
+                if (hasVisible || filterText === '') {
+                    section.style.display = '';
+                } else {
+                    section.style.display = 'none';
                 }
-                visibleByParent.get(parent).push(item);
-                bestScoreByParent.set(parent, Math.max(bestScoreByParent.get(parent) ?? -1, score));
             });
-
-            visibleByParent.forEach((items, parent) => {
-                items.sort((a, b) => Number(b.dataset.score || 0) - Number(a.dataset.score || 0));
-                items.forEach(item => parent.appendChild(item));
-            });
-
-            categoryContainers.forEach(container => {
-                const list = container.querySelector('.script-list');
-                const hasVisibleItems = list && visibleByParent.has(list);
-                container.style.display = hasVisibleItems ? '' : 'none';
-            });
-
-            const rankedCategories = categoryContainers
-                .map(container => {
-                    const list = container.querySelector('.script-list');
-                    return {
-                        container,
-                        score: list ? (bestScoreByParent.get(list) ?? -1) : -1
-                    };
-                })
-                .filter(entry => entry.score >= 0)
-                .sort((a, b) => b.score - a.score);
-
-            const tree = document.getElementById('category-tree');
-            rankedCategories.forEach(({ container }) => tree.appendChild(container));
 
             // Handle category auto-expansion smoothly without resetting terminal CSS
+            const categoryLists = document.querySelectorAll('#category-tree .script-list');
             categoryLists.forEach(list => {
-                list.style.maxHeight = 'none';
-                list.classList.remove('collapsed');
+                if (filterText !== '') {
+                    list.style.maxHeight = 'none';
+                    list.classList.remove('collapsed');
+                } else {
+                    list.style.maxHeight = '';
+                }
             });
         });
     }
@@ -3294,7 +3472,6 @@ function bindEvents() {
             }
         });
     }
-    
 
     // Terminal Tabs
     const btnAddTab = document.getElementById('btn-add-tab');
@@ -3324,12 +3501,34 @@ function bindEvents() {
         updateAutoScrollBtn(state.activeTerminalId, true);
     }
 
+    const densityControl = document.getElementById('terminal-density-control');
+    if (densityControl) {
+        densityControl.addEventListener('click', (event) => {
+            const button = event.target.closest('.density-option');
+            if (button?.dataset.density) {
+                setTerminalDensity(button.dataset.density);
+            }
+        });
+    }
+
     // Search
     const searchInput = document.getElementById('search-input');
     searchInput.addEventListener('input', (e) => {
         state.searchQuery = e.target.value;
         renderSidebar();
     });
+
+    const categoryTree = document.getElementById('category-tree');
+    if (categoryTree) {
+        categoryTree.addEventListener('click', handleSidebarAction);
+        categoryTree.addEventListener('keydown', handleSidebarKeydown);
+    }
+
+    const favoritesList = document.getElementById('favorites-list');
+    if (favoritesList) {
+        favoritesList.addEventListener('click', handleSidebarAction);
+        favoritesList.addEventListener('keydown', handleSidebarKeydown);
+    }
 
     // CLI input
     const cliInput = document.getElementById('cli-input');
@@ -3397,6 +3596,33 @@ function bindEvents() {
     document.getElementById('btn-add-script').addEventListener('click', () => openModal('new'));
     document.getElementById('btn-refresh').addEventListener('click', () => loadScripts());
 
+    // Predefined Tools Dropdown toggle
+    const btnToolsDropdown = document.getElementById('btn-tools-dropdown');
+    const toolsDropdownMenu = document.getElementById('tools-dropdown-menu');
+    if (btnToolsDropdown && toolsDropdownMenu) {
+        btnToolsDropdown.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toolsDropdownMenu.classList.toggle('active');
+        });
+        
+        // Hide dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!toolsDropdownMenu.contains(e.target) && e.target !== btnToolsDropdown) {
+                toolsDropdownMenu.classList.remove('active');
+            }
+        });
+
+        // Event delegation for dropdown items
+        toolsDropdownMenu.querySelectorAll('.dropdown-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                toolsDropdownMenu.classList.remove('active');
+                const toolKey = item.getAttribute('data-tool');
+                loadPredefinedScript(toolKey);
+            });
+        });
+    }
+
     // Script Details Actions
     const btnRun = document.getElementById('btn-run');
     if (btnRun) {
@@ -3429,9 +3655,9 @@ function bindEvents() {
     const historyOverlay = document.getElementById('history-modal-overlay');
     const historyClose = document.getElementById('history-modal-close');
     const historySearch = document.getElementById('history-search');
-    const historyFilters = document.querySelectorAll('.history-filter');
     const historyExportTxt = document.getElementById('history-export-txt');
     const historyExportLog = document.getElementById('history-export-log');
+    const btnClearHistory = document.getElementById('btn-clear-history');
 
     if (historyClose) historyClose.addEventListener('click', closeHistoryViewer);
     if (historyOverlay) {
@@ -3456,31 +3682,49 @@ function bindEvents() {
     if (historyExportTxt) historyExportTxt.addEventListener('click', () => exportExecutionHistory('txt'));
     if (historyExportLog) historyExportLog.addEventListener('click', () => exportExecutionHistory('log'));
 
+
     const historyClearBtn = document.getElementById('history-clear-btn');
     if (historyClearBtn) {
         historyClearBtn.addEventListener('click', async () => {
-            const confirmation = confirm('Are you sure you want to permanently clear your command history log?');
+            const confirmation = confirm('Are you sure you want to permanently clear your command and execution history? This will delete all script and command run logs, and reset CLI command history. This action cannot be undone.');
             if (!confirmation) return;
 
             try {
-                const response = await fetch('/api/command_history/clear', {
+                // Clear command history
+                const cmdRes = await fetch(API.command_history_clear, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }
                 });
-                const result = await response.json();
+                const cmdResult = await cmdRes.json();
 
-                if (result.success) {
-                    const targetDisplayList = document.getElementById('history-list');
-                    if (targetDisplayList) {
-                        targetDisplayList.innerHTML = '<div class="history-empty-state">Command history cleared successfully.</div>';
-                    }
-                    const targetSummaryWidget = document.getElementById('history-summary');
-                    if (targetSummaryWidget) {
-                        targetSummaryWidget.innerHTML = '';
-                    }
-                    notify('Command history cleared successfully!', 'success');
+                // Clear execution history
+                const execRes = await fetch(API.history_clear, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const execResult = await execRes.json();
+
+                if (cmdResult.success && execResult.success) {
+                    // Reset client-side state
+                    state.cmdHistory = [];
+                    state.cmdHistoryIndex = -1;
+                    state.historyEntries = [];
+                    state.historySummary = {
+                        total: 0,
+                        failed: 0,
+                        successful: 0,
+                        scripts: 0,
+                        commands: 0
+                    };
+
+                    // Re-render components
+                    renderHistorySummary(state.historySummary);
+                    renderHistoryEntries(state.historyEntries);
+
+                    notify('Command and execution history cleared successfully!', 'success');
                 } else {
-                    notify('Server failed to clear history: ' + (result.error || 'Unknown error'), 'error');
+                    const errMsg = (cmdResult.error || execResult.error || 'Unknown error');
+                    notify('Server failed to clear history: ' + errMsg, 'error');
                 }
             } catch (err) {
                 console.error('Error clearing history:', err);
@@ -3493,6 +3737,30 @@ function bindEvents() {
     document.getElementById('modal-close').addEventListener('click', closeModal);
     document.getElementById('modal-cancel').addEventListener('click', closeModal);
     document.getElementById('modal-overlay').addEventListener('click', (e) => { if (e.target.id === 'modal-overlay') closeModal(); });
+
+    // Arguments Modal setup
+    const argumentsOverlay = document.getElementById('arguments-modal-overlay');
+    if (argumentsOverlay) {
+        const closeArguments = () => closeArgumentsModal();
+        const runArguments = () => {
+            const input = document.getElementById('arguments-input');
+            const relPath = argumentsOverlay._scriptPath; // Store script path in overlay element
+            executeScriptWithArguments(relPath, input.value);
+        };
+        
+        document.getElementById('arguments-modal-close').addEventListener('click', closeArguments);
+        document.getElementById('arguments-modal-cancel').addEventListener('click', closeArguments);
+        document.getElementById('arguments-modal-run').addEventListener('click', runArguments);
+        argumentsOverlay.addEventListener('click', (e) => { if (e.target.id === 'arguments-modal-overlay') closeArguments(); });
+        
+        // Allow Enter key to run in arguments textarea (Ctrl+Enter or similar)
+        document.getElementById('arguments-input').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                runArguments();
+            }
+        });
+    }
+
 
     document.getElementById('modal-save').addEventListener('click', () => {
         const category = document.getElementById('modal-category').value.trim();
@@ -3531,10 +3799,6 @@ function bindEvents() {
         githubOverlay.addEventListener('click', (e) => { if (e.target.id === 'github-modal-overlay') closeGithub(); });
 
         document.getElementById('github-modal-import').addEventListener('click', () => {
-            const url = document.getElementById('github-url').value;
-            const category = document.getElementById('github-category').value;
-            const filename = document.getElementById('github-filename').value;
-
             if (!url || !category || !filename) {
                 return notify('All GitHub import fields are required.', 'warning');
             }
@@ -3571,6 +3835,31 @@ function bindEvents() {
     // Lock Features
     const btnLock = document.getElementById('btn-lock');
     const lockOverlay = document.getElementById('lock-modal-overlay');
+
+    function openLockModal(targetPath, isLocked) {
+        state.lockTarget = targetPath;
+        const modalHeader = document.querySelector('#lock-modal h2');
+        const currentPassGroup = document.getElementById('lock-current-pass-group');
+        const newPassGroup = document.getElementById('lock-new-pass').parentElement;
+
+        if (isLocked) {
+            modalHeader.textContent = targetPath === '__terminal__' ? 'Remove Terminal Lock' : 'Remove Script Lock';
+            currentPassGroup.style.display = 'flex';
+            currentPassGroup.querySelector('label').textContent = 'Enter Password to Remove Lock';
+            newPassGroup.style.display = 'none';
+        } else {
+            modalHeader.textContent = targetPath === '__terminal__' ? 'Lock Terminal' : 'Lock Script';
+            currentPassGroup.style.display = 'none';
+            newPassGroup.style.display = 'flex';
+            newPassGroup.querySelector('label').textContent = 'Set Password';
+        }
+
+        document.getElementById('lock-current-pass').value = '';
+        document.getElementById('lock-new-pass').value = '';
+
+        lockOverlay.classList.add('active');
+    }
+
     if (btnLock && lockOverlay) {
         btnLock.addEventListener('click', () => {
             if (!state.activeScript) return;
@@ -3581,28 +3870,22 @@ function bindEvents() {
                 let sc = state.scripts[cat].find(s => s.relative_path === state.activeScript);
                 if (sc && sc.locked) isLocked = true;
             }
-
-            const modalHeader = document.querySelector('#lock-modal h2');
-            const currentPassGroup = document.getElementById('lock-current-pass-group');
-            const newPassGroup = document.getElementById('lock-new-pass').parentElement;
-
-            if (isLocked) {
-                modalHeader.textContent = 'Remove Script Lock';
-                currentPassGroup.style.display = 'flex';
-                currentPassGroup.querySelector('label').textContent = 'Enter Password to Remove Lock';
-                newPassGroup.style.display = 'none';
-            } else {
-                modalHeader.textContent = 'Lock Script';
-                currentPassGroup.style.display = 'none';
-                newPassGroup.style.display = 'flex';
-                newPassGroup.querySelector('label').textContent = 'Set Password';
-            }
-
-            document.getElementById('lock-current-pass').value = '';
-            document.getElementById('lock-new-pass').value = '';
-
-            lockOverlay.classList.add('active');
+            openLockModal(state.activeScript, isLocked);
         });
+    }
+
+    const btnLockTerminal = document.getElementById('btn-lock-terminal');
+    if (btnLockTerminal && lockOverlay) {
+        btnLockTerminal.addEventListener('click', async () => {
+            try {
+                const res = await fetch(API.exec_check_lock);
+                const data = await res.json();
+                openLockModal('__terminal__', data.locked);
+            } catch (err) {
+                console.error('Failed to check terminal lock status', err);
+            }
+        });
+    }
 
         const closeLock = () => lockOverlay.classList.remove('active');
         document.getElementById('lock-modal-close').addEventListener('click', closeLock);
@@ -3630,10 +3913,22 @@ function bindEvents() {
             ?.addEventListener('click', restartReplay);
 
         document.getElementById('lock-modal-save').addEventListener('click', async () => {
+            if (!state.lockTarget) return;
+
             let isLocked = false;
-            for (let cat in state.scripts) {
-                let sc = state.scripts[cat].find(s => s.relative_path === state.activeScript);
-                if (sc && sc.locked) isLocked = true;
+            if (state.lockTarget === '__terminal__') {
+                try {
+                    const res = await fetch(API.exec_check_lock);
+                    const data = await res.json();
+                    isLocked = data.locked;
+                } catch (e) {
+                    console.error(e);
+                }
+            } else {
+                for (let cat in state.scripts) {
+                    let sc = state.scripts[cat].find(s => s.relative_path === state.lockTarget);
+                    if (sc && sc.locked) isLocked = true;
+                }
             }
 
             let oldPass = '', newPass = '';
@@ -3648,25 +3943,31 @@ function bindEvents() {
                 }
             }
 
-            const success = await manageLock(state.activeScript, oldPass, newPass);
+            const success = await manageLock(state.lockTarget, oldPass, newPass);
             if (success) {
+                const targetName = state.lockTarget === '__terminal__' ? 'Terminal' : 'Script';
                 notify(
                     isLocked
-                        ? 'Script lock removed successfully.'
-                        : 'Script locked successfully.',
+                        ? `${targetName} lock removed successfully.`
+                        : `${targetName} locked successfully.`,
                     'success'
                 );
-                if (!isLocked && newPass) {
-                    clearScriptUnlock(state.activeScript);
-                    selectScript(state.activeScript);
-                } else if (isLocked && !newPass) {
-                    clearScriptUnlock(state.activeScript);
-                    selectScript(state.activeScript);
+                
+                if (state.lockTarget === '__terminal__') {
+                    if (newPass) markScriptUnlocked('__terminal__', newPass);
+                    else clearScriptUnlock('__terminal__');
+                } else {
+                    if (!isLocked && newPass) {
+                        clearScriptUnlock(state.lockTarget);
+                        selectScript(state.lockTarget);
+                    } else if (isLocked && !newPass) {
+                        clearScriptUnlock(state.lockTarget);
+                        selectScript(state.lockTarget);
+                    }
                 }
                 closeLock();
             }
         });
-    }
 
     document.getElementById('btn-reliability')?.addEventListener('click', openReliabilityDashboard);
 
@@ -3730,6 +4031,23 @@ function bindEvents() {
     document
         .getElementById('workspace-save-profile')
         ?.addEventListener('click', saveWorkspaceProfile);
+
+    document
+        .getElementById('workspace-export-btn')
+        ?.addEventListener('click', exportWorkspaceSnapshot);
+
+    document
+        .getElementById('workspace-import-btn')
+        ?.addEventListener('click', () => {
+            document.getElementById('workspace-import-file')?.click();
+        });
+
+    document
+        .getElementById('workspace-import-file')
+        ?.addEventListener('change', (event) => {
+            importWorkspaceSnapshot(event.target.files?.[0]);
+            event.target.value = '';
+        });
 }
 
 // ─── Helpers ───────────────────────────────────────────────
@@ -3741,7 +4059,48 @@ function escapeHtml(text) {
 }
 
 function escapeAttr(text) {
-    return text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return String(text ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Sanitize HTML string to prevent XSS attacks.
+ * Uses DOMPurify when available, falls back to aggressive tag stripping.
+ */
+function safeHTML(html) {
+    if (typeof html !== 'string') return '';
+    if (typeof DOMPurify !== 'undefined') {
+        return DOMPurify.sanitize(html, {
+            ALLOWED_TAGS: [
+                'div', 'span', 'p', 'br', 'strong', 'em', 'b', 'i', 'u',
+                'ul', 'ol', 'li', 'pre', 'code', 'article', 'section',
+                'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button', 'label',
+                'input', 'svg', 'path', 'circle', 'ellipse', 'line',
+                'polyline', 'polygon', 'rect', 'g', 'text', 'use', 'defs',
+                'kbd', 'table', 'thead', 'tbody', 'tr', 'td', 'th',
+            ],
+            ALLOWED_ATTR: [
+                'class', 'id', 'style', 'role', 'tabindex', 'title',
+                'aria-label', 'aria-live', 'aria-expanded', 'aria-hidden',
+                'data-id', 'data-log-file', 'data-index', 'data-cmd',
+                'data-type', 'data-session-id',
+                'xmlns', 'viewBox', 'width', 'height', 'fill', 'stroke',
+                'stroke-width', 'stroke-linecap', 'stroke-linejoin',
+                'd', 'cx', 'cy', 'r', 'rx', 'ry', 'x', 'y',
+                'x1', 'y1', 'x2', 'y2', 'points',
+                'type', 'placeholder', 'value', 'hidden',
+                'onclick', 'onkeydown',
+            ],
+        });
+    }
+    // Fallback: strip all tags except safe ones
+    return html.replace(/<script[\s>][\s\S]*?<\/script>/gi, '')
+               .replace(/on\w+\s*=\s*["'][^"']*["']/gi, '')
+               .replace(/javascript\s*:/gi, '');
 }
 
 function removeNotification(notification) {
@@ -3893,18 +4252,7 @@ async function checkWorkspaceRecovery() {
         }
 
         const snapshot = data.workspace.workspace;
-
-        const savedAt = data.workspace.saved_at;
-        const modalBody = document.querySelector('#workspace-restore-overlay .modal-body');
-        if (modalBody && savedAt) {
-            const existing = modalBody.querySelector('.workspace-snapshot-meta');
-            if (!existing) {
-                const meta = document.createElement('div');
-                meta.className = 'workspace-snapshot-meta';
-                meta.textContent = `Snapshot saved at: ${savedAt}`;
-                modalBody.appendChild(meta);
-            }
-        }
+        renderWorkspaceRestorePreview(data.workspace, workspaceDiag);
 
         document
             .getElementById('workspace-restore-overlay')
@@ -3914,21 +4262,53 @@ async function checkWorkspaceRecovery() {
             .getElementById('workspace-restore-btn')
             ?.addEventListener('click', () => {
                 restoreWorkspace(snapshot, 'full');
-            });
+            }, { once: true });
 
         document
             .getElementById('workspace-safe-btn')
             ?.addEventListener('click', () => {
                 restoreWorkspace(snapshot, 'safe');
-            });
+            }, { once: true });
 
         document
             .getElementById('workspace-clean-btn')
-            ?.addEventListener('click', closeWorkspaceRestore);
+            ?.addEventListener('click', closeWorkspaceRestore, { once: true });
 
     } catch (err) {
         console.error(err);
     }
+}
+
+function renderWorkspaceRestorePreview(workspacePayload, diagnostics = {}) {
+    const panel = document.getElementById('workspace-restore-preview');
+    if (!panel) return;
+
+    const snapshot = workspacePayload?.workspace || {};
+    const preview = diagnostics.preview || {};
+    const warnings = diagnostics.warnings || [];
+    const terminalCount = preview.terminal_count ?? (Array.isArray(snapshot.terminals) ? snapshot.terminals.length : 0);
+    const rows = [
+        ['Workspace', preview.workspace_name || 'Recovered workspace'],
+        ['Terminals', terminalCount],
+        ['Snapshot', preview.snapshot_timestamp || workspacePayload?.saved_at || 'Unknown'],
+        ['Replay', preview.has_replay ? 'Present' : 'None'],
+        ['Debugger', preview.has_debug ? 'Present' : 'None'],
+    ];
+
+    panel.hidden = false;
+    panel.innerHTML = safeHTML(`
+        <div class="workspace-integrity-grid">
+            ${rows.map(([label, value]) => `
+                <span>${escapeHtml(label)}</span>
+                <strong>${escapeHtml(String(value))}</strong>
+            `).join('')}
+        </div>
+        ${warnings.length ? `
+            <div class="workspace-integrity-warnings">
+                ${warnings.map(warning => `<div>${escapeHtml(warning)}</div>`).join('')}
+            </div>
+        ` : '<div class="workspace-integrity-ok">No integrity warnings.</div>'}
+    `);
 }
 
 function closeWorkspaceRestore() {
@@ -4004,11 +4384,11 @@ function rebuildTerminalWorkspace(terminals, activeTerminalId, dataSnapshots = [
         bodyContainer.setAttribute('role', 'log');
         bodyContainer.setAttribute('aria-live', 'polite');
         const snapshot = dataSnapshots?.find(snap => snap.id === id);
-        bodyContainer.innerHTML = snapshot?.content ||
+        bodyContainer.innerHTML = safeHTML(snapshot?.content ||
             `<div class="cli-welcome">
                 <span class="cli-prompt">$</span>
                 <span class="cli-welcome-text">Restored terminal session.</span>
-            </div>`;
+            </div>`);
         cliArea.insertBefore(bodyContainer, document.querySelector('.cli-input-bar'));
 
         state.terminals.push(id);
@@ -4088,7 +4468,7 @@ async function openWorkspaceManager() {
         if (!data.profiles.length) {
             container.innerHTML = '<p style="color:var(--text-secondary);margin:0;">No saved profiles yet.</p>';
         } else {
-            container.innerHTML = data.profiles.map(profile => `
+            container.innerHTML = safeHTML(data.profiles.map(profile => `
                 <div class="workspace-profile-item">
                     <span>${escapeHtml(profile)}</span>
                     <div class="workspace-profile-actions">
@@ -4096,7 +4476,7 @@ async function openWorkspaceManager() {
                         <button class="btn" onclick="deleteWorkspaceProfile('${escapeHtml(profile)}')">Delete</button>
                     </div>
                 </div>
-            `).join('');
+            `).join(''));
         }
 
         document
@@ -4139,6 +4519,56 @@ async function saveWorkspaceProfile() {
     } catch (err) {
         console.error(err);
         notify('Failed to save workspace profile.', 'error');
+    }
+}
+
+async function exportWorkspaceSnapshot() {
+    try {
+        const res = await fetch(API.workspace_export);
+        if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            notify(data.error || 'No workspace snapshot available to export.', 'warning');
+            return;
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'devshell-workspace.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        console.error(err);
+        notify('Failed to export workspace snapshot.', 'error');
+    }
+}
+
+async function importWorkspaceSnapshot(file) {
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const payload = JSON.parse(text);
+        const res = await fetch(API.workspace_import, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            notify(data.error || 'Invalid workspace snapshot.', 'error');
+            return;
+        }
+
+        const warning = data.diagnostics?.warnings?.[0];
+        notify(warning || 'Workspace snapshot imported.', warning ? 'warning' : 'success');
+    } catch (err) {
+        console.error(err);
+        notify('Import must be a valid workspace JSON file.', 'error');
     }
 }
 
@@ -4640,6 +5070,27 @@ document.addEventListener('keydown', (e) => {
 // Initialize debugger when DOM is ready
 document.addEventListener('DOMContentLoaded', () => { DebuggerConsole.init(); });
 
+// ─── REAL-TIME DIGITAL SYSTEM CLOCK ENGINE (#114) ───
+function startHeaderClock() {
+    const clockElement = document.getElementById('header-clock');
+    if (!clockElement) return;
+
+    const updateClock = () => {
+        const now = new Date();
+        
+        // Pad single digits with leading zeros for consistent HH:MM:SS layouts
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+
+        clockElement.textContent = `${hours}:${minutes}:${seconds}`;
+    };
+
+    // Fire immediately on execution to prevent a 1000ms layout text jump
+    updateClock();
+
+    // Hook up the optimized 1000ms execution loop lifecycle track
+    setInterval(updateClock, 1000);
 // Global page lifecycle listeners for SSE resource cleanup
 if (!window.hasRegisteredLifecycleCleanup) {
     window.hasRegisteredLifecycleCleanup = true;
@@ -4678,4 +5129,366 @@ if (!window.hasRegisteredLifecycleCleanup) {
             handleLifecycleCleanup();
         }
     });
+}
+
+// ─── Predefined Dev & DevOps Tools Templates ────────────────
+const PREDEFINED_TOOLS = {
+    sys_info: {
+        name: "System Info Dashboard",
+        category: "dev-tools",
+        filename: "system_info.sh",
+        url: "https://explainshell.com",
+        content: `#!/bin/bash
+# name: System Info Dashboard
+# desc: Detailed system diagnostic displaying CPU load, Memory stats, Disk status, and network details.
+# tag: dev-tools, system
+# url: https://explainshell.com
+
+echo "=== System Info Dashboard ==="
+echo "Date: $(date)"
+echo "OS: $(uname -a)"
+echo ""
+echo "--- CPU LOAD ---"
+uptime
+echo ""
+echo "--- MEMORY USAGE ---"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    vm_stat | perl -ne '/page size of (\\d+) bytes/ && ($s=$1); /Pages free:\\s+(\\d+)/ && ($f=$1); /Pages active:\\s+(\\d+)/ && ($a=$1); /Pages inactive:\\s+(\\d+)/ && ($i=$1); /Pages speculative:\\s+(\\d+)/ && ($sp=$1); /Pages wired down:\\s+(\\d+)/ && ($w=$1); END { printf "Active: %.2fMB\\nInactive: %.2fMB\\nSpeculative: %.2fMB\\nWired: %.2fMB\\nFree: %.2fMB\\n", ($a*$s)/1048576, ($i*$s)/1048576, ($sp*$s)/1048576, ($w*$s)/1048576, ($f*$s)/1048576 }'
+else
+    free -m
+fi
+echo ""
+echo "--- DISK SPACE ---"
+df -h | grep -E '^/dev/' || df -h
+echo ""
+echo "--- NETWORK DEVICES ---"
+ifconfig -a || ip a
+`
+    },
+    port_scanner: {
+        name: "Process Port Lister",
+        category: "dev-tools",
+        filename: "process_port_lister.sh",
+        url: "https://portchecktool.com",
+        content: `#!/bin/bash
+# name: Process Port Lister
+# desc: Scan and list all active listening ports and the respective processes bound to them.
+# tag: dev-tools, network
+# url: https://portchecktool.com
+
+echo "=== Process Port Lister ==="
+echo "Scanning for active listening sockets..."
+echo ""
+if command -v lsof >/dev/null 2>&1; then
+    lsof -i -P -n | grep LISTEN || echo "No listening ports found via lsof."
+elif command -v netstat >/dev/null 2>&1; then
+    netstat -antp | grep LISTEN || netstat -an | grep LISTEN || echo "No listening ports found via netstat."
+elif command -v ss >/dev/null 2>&1; then
+    ss -lntp || ss -ln || echo "No listening ports found via ss."
+else
+    echo "Error: Neither lsof, netstat, nor ss found on this system."
+fi
+`
+    },
+    find_large_files: {
+        name: "Find Large Files (>100MB)",
+        category: "dev-tools",
+        filename: "find_large_files.sh",
+        url: "https://tldr.sh",
+        content: `#!/bin/bash
+# name: Find Large Files (>100MB)
+# desc: Search the current directory recursively and list all files larger than 100MB.
+# tag: dev-tools, search
+# url: https://tldr.sh
+
+TARGET_DIR="."
+echo "=== Find Large Files (>100MB) ==="
+echo "Searching in: $TARGET_DIR"
+echo "This might take a moment..."
+echo ""
+find "$TARGET_DIR" -type f -size +100M -exec du -h {} + 2>/dev/null | sort -rh || find "$TARGET_DIR" -type f -size +100000k -exec du -h {} + 2>/dev/null | sort -rh
+echo ""
+echo "Search complete."
+`
+    },
+    json_formatter: {
+        name: "JSON Formatter/Validator",
+        category: "dev-tools",
+        filename: "json_formatter.sh",
+        url: "https://jsonformatter.org",
+        content: `#!/bin/bash
+# name: JSON Formatter/Validator
+# desc: Pipe JSON input directly into Python's json.tool for format-indenting and validity checking.
+# tag: dev-tools, json
+# url: https://jsonformatter.org
+
+echo "=== JSON Formatter/Validator ==="
+echo "Enter/Paste your raw JSON content below, then press Ctrl+D to format:"
+echo ""
+TMP_FILE=$(mktemp)
+cat > "$TMP_FILE"
+echo ""
+echo "--- Formatted Output ---"
+if command -v python3 >/dev/null 2>&1; then
+    python3 -m json.tool "$TMP_FILE"
+elif command -v python >/dev/null 2>&1; then
+    python -m json.tool "$TMP_FILE"
+elif command -v jq >/dev/null 2>&1; then
+    jq . "$TMP_FILE"
+else
+    echo "Error: Neither python3, python, nor jq found to parse JSON."
+    cat "$TMP_FILE"
+fi
+rm -f "$TMP_FILE"
+`
+    },
+    base64_util: {
+        name: "Base64 Encode/Decode",
+        category: "dev-tools",
+        filename: "base64_util.sh",
+        url: "https://www.base64decode.org",
+        content: `#!/bin/bash
+# name: Base64 Encode/Decode
+# desc: Easily encode regular text or decode encoded Base64 strings.
+# tag: dev-tools, utility
+# url: https://www.base64decode.org
+
+echo "=== Base64 Utility ==="
+echo "1) Encode Text to Base64"
+echo "2) Decode Base64 to Text"
+read -p "Select option (1 or 2): " choice
+echo ""
+if [ "$choice" = "1" ]; then
+    read -p "Enter text to encode: " txt
+    echo -n "$txt" | base64
+elif [ "$choice" = "2" ]; then
+    read -p "Enter Base64 string to decode: " b64
+    echo -n "$b64" | base64 --decode || echo -n "$b64" | base64 -d
+else
+    echo "Invalid choice."
+fi
+echo ""
+`
+    },
+    docker_status: {
+        name: "Docker Container Status",
+        category: "devops-tools",
+        filename: "docker_status.sh",
+        url: "https://hub.docker.com",
+        content: `#!/bin/bash
+# name: Docker Container Status
+# desc: Check if docker daemon is running, inspect CPU/memory stats, and list active containers.
+# tag: devops-tools, docker
+# url: https://hub.docker.com
+
+echo "=== Docker Container Status ==="
+if ! command -v docker >/dev/null 2>&1; then
+    echo "Error: docker command line tool is not installed."
+    exit 1
+fi
+echo "--- Docker System Info ---"
+docker info --format 'Containers: {{.Containers}}, Running: {{.ContainersRunning}}, Paused: {{.ContainersPaused}}, Stopped: {{.ContainersStopped}}' || echo "Error connecting to Docker Daemon."
+echo ""
+echo "--- Container Resource Stats ---"
+docker stats --no-stream --format "table {{.Name}}\\t{{.CPUPerc}}\\t{{.MemUsage}}\\t{{.NetIO}}" 2>/dev/null || echo "No running containers or stats unavailable."
+echo ""
+echo "--- All Containers ---"
+docker ps -a --format "table {{.Names}}\\t{{.Image}}\\t{{.Status}}\\t{{.Ports}}"
+`
+    },
+    ssl_expiry: {
+        name: "SSL Expiry Checker",
+        category: "devops-tools",
+        filename: "ssl_expiry.sh",
+        url: "https://www.ssllabs.com/ssltest/",
+        content: `#!/bin/bash
+# name: SSL Expiry Checker
+# desc: Check and verify SSL/TLS certificate validity and expiration for any web host.
+# tag: devops-tools, ssl
+# url: https://www.ssllabs.com/ssltest/
+
+echo "=== SSL Expiry Checker ==="
+read -p "Enter domain (e.g. google.com): " domain
+if [ -z "$domain" ]; then
+    domain="google.com"
+fi
+echo "Connecting to $domain:443..."
+echo ""
+if ! command -v openssl >/dev/null 2>&1; then
+    echo "Error: openssl utility is not installed."
+    exit 1
+fi
+res=$(echo | openssl s_client -servername "$domain" -connect "$domain":443 2>/dev/null | openssl x509 -noout -dates -issuer)
+if [ -z "$res" ]; then
+    echo "Failed to retrieve SSL certificate details."
+else
+    echo "$res"
+fi
+`
+    },
+    git_diagnostics: {
+        name: "Git Repo Diagnostics",
+        category: "devops-tools",
+        filename: "git_diagnostics.sh",
+        url: "https://github.com",
+        content: `#!/bin/bash
+# name: Git Repo Diagnostics
+# desc: Run a detailed diagnostics audit on the local Git repository branches, statuses, and remotes.
+# tag: devops-tools, git
+# url: https://github.com
+
+echo "=== Git Repo Diagnostics ==="
+if ! command -v git >/dev/null 2>&1; then
+    echo "Error: git is not installed."
+    exit 1
+fi
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "Error: Current directory is not a Git repository."
+    exit 1
+fi
+echo "Current Branch: $(git branch --show-current)"
+echo "Git Root: $(git rev-parse --show-toplevel)"
+echo ""
+echo "--- Git Status ---"
+git status -s
+echo ""
+echo "--- Recent Commits ---"
+git log -n 5 --oneline
+echo ""
+echo "--- Configured Remotes ---"
+git remote -v
+`
+    },
+    resource_alarm: {
+        name: "Resource Alarm Monitor",
+        category: "devops-tools",
+        filename: "resource_alarm.sh",
+        url: "https://grafana.com",
+        content: `#!/bin/bash
+# name: Resource Alarm Monitor
+# desc: Continuously monitor host disk and memory usage, triggering high usage console alerts.
+# tag: devops-tools, monitoring
+# url: https://grafana.com
+
+DISK_THRESHOLD=80
+MEM_THRESHOLD=85
+
+echo "=== Resource Alarm Monitor ==="
+echo "Disk Warning Limit: $DISK_THRESHOLD%"
+echo "Memory Warning Limit: $MEM_THRESHOLD%"
+echo ""
+
+# Disk Check
+disk_val=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+if [ "$disk_val" -gt "$DISK_THRESHOLD" ]; then
+    echo "⚠️ ALARM: Disk usage on root / is at \${disk_val}%!"
+else
+    echo "Disk usage is normal: \${disk_val}%"
+fi
+
+# Memory Check
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    # MacOS memory approximation
+    free_pages=$(vm_stat | grep "Pages free" | awk '{print $3}' | sed 's/\\.//')
+    active_pages=$(vm_stat | grep "Pages active" | awk '{print $3}' | sed 's/\\.//')
+    spec_pages=$(vm_stat | grep "Pages speculative" | awk '{print $3}' | sed 's/\\.//')
+    wire_pages=$(vm_stat | grep "Pages wired" | awk '{print $3}' | sed 's/\\.//')
+    used_pages=$((active_pages + wire_pages + spec_pages))
+    total_pages=$((used_pages + free_pages))
+    mem_val=$((used_pages * 100 / total_pages))
+else
+    mem_val=$(free | grep Mem | awk '{print int($3/$2 * 100)}')
+fi
+
+if [ "$mem_val" -gt "$MEM_THRESHOLD" ]; then
+    echo "⚠️ ALARM: Memory usage is at \${mem_val}%!"
+else
+    echo "Memory usage is normal: \${mem_val}%"
+fi
+`
+    },
+    k8s_pods: {
+        name: "Kubernetes Pod Status",
+        category: "devops-tools",
+        filename: "k8s_pods.sh",
+        url: "https://kubernetes.io/docs/",
+        content: `#!/bin/bash
+# name: Kubernetes Pod Status
+# desc: Connect to configured cluster, check node connectivity, list pods across namespaces.
+# tag: devops-tools, kubernetes
+# url: https://kubernetes.io/docs/
+
+echo "=== Kubernetes Pod Status ==="
+if ! command -v kubectl >/dev/null 2>&1; then
+    echo "Error: kubectl command-line tool is not installed."
+    exit 1
+fi
+echo "--- Cluster Info ---"
+kubectl cluster-info || echo "Error connecting to Kubernetes Cluster."
+echo ""
+echo "--- Nodes Status ---"
+kubectl get nodes 2>/dev/null || echo "No nodes found or connection failed."
+echo ""
+echo "--- Pods (All Namespaces) ---"
+kubectl get pods --all-namespaces
+`
+    },
+    nginx_tester: {
+        name: "Nginx Config Integrity",
+        category: "devops-tools",
+        filename: "nginx_tester.sh",
+        url: "https://nginx.org/en/docs/",
+        content: `#!/bin/bash
+# name: Nginx Config Integrity
+# desc: Validate host Nginx configuration syntax and test responsiveness of localhost.
+# tag: devops-tools, nginx
+# url: https://nginx.org/en/docs/
+
+echo "=== Nginx Config Integrity ==="
+if ! command -v nginx >/dev/null 2>&1; then
+    echo "Error: nginx command is not installed or not in PATH."
+    exit 1
+fi
+echo "--- Testing Configuration Syntax ---"
+nginx -t 2>&1 || sudo nginx -t 2>&1
+echo ""
+echo "--- Nginx System Process Status ---"
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl status nginx --no-pager || echo "systemctl failed to get status."
+else
+    ps aux | grep nginx | grep -v grep
+fi
+`
+    }
+};
+
+async function loadPredefinedScript(key) {
+    const template = PREDEFINED_TOOLS[key];
+    if (!template) return;
+
+    try {
+        notify(`Linking ${template.name}...`, 'info');
+        const res = await fetch(API.save, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                category: template.category,
+                filename: template.filename,
+                content: template.content,
+                password: getUnlockPassword(`${template.category}/${template.filename}`)
+            })
+        });
+        const data = await res.json();
+        if (data.success) {
+            await loadScripts();
+            await selectScript(data.path);
+            notify(`${template.name} has been linked and is ready to run!`, 'success');
+        } else {
+            notify(`Failed to link script: ${data.error || 'unknown error'}`, 'error');
+        }
+    } catch (err) {
+        console.error('Failed to link predefined script:', err);
+        notify(`Failed to link script: ${err.message}`, 'error');
+    }
+}
 }
