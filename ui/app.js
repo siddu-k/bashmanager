@@ -69,6 +69,8 @@ let state = {
     workspaceRecoveryEnabled: true,
     sessionId: null,
     lastSaveTimestamp: 0,
+    runningScripts: {},   // { termId: { run_id } }
+terminalFontSize: parseInt(localStorage.getItem('terminal-font-size')) || 13,
     runningScripts: {},  // termId -> { step, total, command, status }
     reliabilitySummary: null,
     reliabilityFailures: null,
@@ -3275,6 +3277,43 @@ function closeModal() {
 
 // ─── Event Bindings ────────────────────────────────────────
 function bindEvents() {
+    // ─── TERMINAL TEXT SIZE ZOOM PANEL ENGINE (#113) ───
+    const btnZoomIn = document.getElementById('btn-zoom-in');
+    const btnZoomOut = document.getElementById('btn-zoom-out');
+    const zoomDisplay = document.getElementById('terminal-zoom-display');
+    const terminalBody = document.getElementById('terminal-body');
+
+    // Sync rendering on startup routine
+    const applyTerminalFontSize = () => {
+        if (terminalBody) {
+            terminalBody.style.fontSize = `${state.terminalFontSize}px`;
+        }
+        if (zoomDisplay) {
+            zoomDisplay.textContent = `${state.terminalFontSize}px`;
+        }
+        localStorage.setItem('terminal-font-size', state.terminalFontSize);
+    };
+
+    // Initialize preference configurations instantly on event hook cycle
+    applyTerminalFontSize();
+
+    if (btnZoomIn) {
+        btnZoomIn.addEventListener('click', () => {
+            if (state.terminalFontSize < 20) { // Strict upper bounds constraint
+                state.terminalFontSize++;
+                applyTerminalFontSize();
+            }
+        });
+    }
+
+    if (btnZoomOut) {
+        btnZoomOut.addEventListener('click', () => {
+            if (state.terminalFontSize > 11) { // Strict lower bounds constraint
+                state.terminalFontSize--;
+                applyTerminalFontSize();
+            }
+        });
+    }
     // Terminal Search
     const cliSearchInput = document.getElementById('cli-search-input');
     if (cliSearchInput) {
