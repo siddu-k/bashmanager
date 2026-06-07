@@ -330,6 +330,19 @@ body {
     min-width: 0;
 }
 
+#app-main.terminal-maximized #sidebar,
+#app-main.terminal-maximized #analysis-panel,
+#app-main.terminal-maximized .resizer {
+    display: none !important;
+}
+
+#app-main.terminal-maximized #left-panel,
+#app-main.terminal-maximized #cli-area {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: none;
+}
+
 /* ─── Resizers ────────────────────────────────────────── */
 .resizer {
     width: 6px;

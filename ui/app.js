@@ -63,6 +63,7 @@ let state = {
     activeTerminalId: 1,
     nextTerminalId: 2,
     autoScroll: {},      // per-terminal auto-scroll toggle: { termId: bool }
+    terminalIsMaximized: false,
     workspaceRestored: false,
     workspaceProfiles: [],
     restoreMode: 'full',
@@ -2468,6 +2469,37 @@ function downloadTerminalLog() {
     notify(`Log downloaded as "${filename}".`, 'success');
 }
 
+function updateMaximizeTerminalButton() {
+    const btn = document.getElementById('btn-maximize-terminal');
+    if (!btn) return;
+
+    const isMaximized = state.terminalIsMaximized;
+    btn.classList.toggle('active', isMaximized);
+    btn.setAttribute('aria-pressed', String(isMaximized));
+    btn.title = isMaximized ? 'Restore terminal layout' : 'Maximize terminal view';
+    btn.setAttribute(
+        'aria-label',
+        isMaximized ? 'Restore terminal layout' : 'Maximize terminal view'
+    );
+}
+
+function setTerminalMaximized(isMaximized) {
+    state.terminalIsMaximized = Boolean(isMaximized);
+    const appMain = document.getElementById('app-main');
+    if (appMain) {
+        appMain.classList.toggle('terminal-maximized', state.terminalIsMaximized);
+    }
+    updateMaximizeTerminalButton();
+}
+
+function toggleTerminalMaximized() {
+    setTerminalMaximized(!state.terminalIsMaximized);
+    notify(
+        state.terminalIsMaximized ? 'Terminal focus view enabled.' : 'Terminal layout restored.',
+        'info'
+    );
+}
+
 /**
  * Toggles auto-scroll on/off for the active terminal.
  * Updates the button appearance to reflect current state.
@@ -3465,6 +3497,12 @@ function bindEvents() {
         btnDownloadLog.addEventListener('click', downloadTerminalLog);
     }
 
+    const btnMaximizeTerminal = document.getElementById('btn-maximize-terminal');
+    if (btnMaximizeTerminal) {
+        btnMaximizeTerminal.addEventListener('click', toggleTerminalMaximized);
+        updateMaximizeTerminalButton();
+    }
+
     const btnAutoscroll = document.getElementById('btn-autoscroll');
     if (btnAutoscroll) {
         btnAutoscroll.addEventListener('click', toggleAutoScroll);
@@ -3550,6 +3588,9 @@ function bindEvents() {
             searchInput.focus();
         }
         if (e.key === 'Escape') {
+            if (state.terminalIsMaximized) {
+                setTerminalMaximized(false);
+            }
             // close any active modal
             document.querySelectorAll('.modal-overlay').forEach(el => el.classList.remove('active'));
             if (document.activeElement === searchInput) {
