@@ -1,1 +1,1 @@
-["docker/list_containers.sh", "linux/test123.sh"]
+["docker/list_containers.sh", "linux/test123.sh", "devops-tools/docker_status.sh"]

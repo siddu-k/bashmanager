@@ -25,3 +25,4 @@ def test_workspace_get_returns_success(client):
     data = response.get_json()
     assert data["success"] is True
     assert "workspace" in data
+

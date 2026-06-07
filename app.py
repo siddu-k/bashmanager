@@ -20,6 +20,7 @@ import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory, Response
+from werkzeug.exceptions import BadRequest
 
 # Setup logger for DevShell backend logging
 logging.basicConfig(level=logging.INFO)
@@ -140,6 +141,70 @@ def validate_workspace_snapshot(data):
     return True, None
 
 
+def _parse_workspace_time(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def workspace_integrity_warnings(snapshot, saved_at=None):
+    warnings = []
+    if not isinstance(snapshot, dict):
+        return ["Workspace snapshot is malformed."]
+
+    terminals = snapshot.get("terminals")
+    if not isinstance(terminals, list) or not terminals:
+        warnings.append("Workspace snapshot has no terminal list.")
+        terminals = []
+
+    terminal_ids = {item for item in terminals if isinstance(item, int)}
+    if len(terminal_ids) != len(terminals):
+        warnings.append("Workspace snapshot contains invalid terminal ids.")
+
+    active_terminal = snapshot.get("activeTerminalId")
+    if active_terminal is not None and active_terminal not in terminal_ids:
+        warnings.append("Active terminal is missing from the terminal list.")
+
+    terminal_snapshots = snapshot.get("terminalSnapshots", [])
+    if terminal_snapshots is not None and not isinstance(terminal_snapshots, list):
+        warnings.append("Terminal snapshot payload is malformed.")
+    elif isinstance(terminal_snapshots, list):
+        for terminal_snapshot in terminal_snapshots:
+            if not isinstance(terminal_snapshot, dict):
+                warnings.append("Terminal snapshot entry is malformed.")
+                break
+            snap_id = terminal_snapshot.get("id")
+            if snap_id is not None and snap_id not in terminal_ids:
+                warnings.append("Terminal snapshot references a missing terminal.")
+                break
+
+    replay_state = snapshot.get("replayState") or {}
+    if not isinstance(replay_state, dict):
+        warnings.append("Replay state is malformed.")
+    elif replay_state.get("active"):
+        session_id = replay_state.get("sessionId")
+        if not session_id:
+            warnings.append("Active replay state is missing a session reference.")
+        else:
+            replay_path = os.path.join(SESSION_LOG_DIR, f"{session_id}.json")
+            if not os.path.exists(replay_path):
+                warnings.append("Replay session referenced by snapshot is missing.")
+
+    saved_dt = _parse_workspace_time(saved_at)
+    if saved_at and not saved_dt:
+        warnings.append("Snapshot timestamp is malformed.")
+    elif saved_dt:
+        if saved_dt.tzinfo is None:
+            saved_dt = saved_dt.replace(tzinfo=timezone.utc)
+        if (_utc_now() - saved_dt).days > 14:
+            warnings.append("Snapshot is older than 14 days.")
+
+    return warnings
+
+
 def load_workspace_state():
     if not os.path.exists(WORKSPACE_STATE_FILE):
         return None
@@ -169,6 +234,7 @@ def save_workspace_state(data):
     try:
         with open(WORKSPACE_STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
+        _invalidate_reliability_cache(keys=['diagnostics'])
         return True, None
     except Exception as e:
         return False, str(e)
@@ -394,7 +460,7 @@ def _format_duration(seconds):
     return f"{minutes}m {remaining:.1f}s"
 
 
-def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=""):
+def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd="", arguments=None):
     _ensure_log_dirs()
     started_at = _utc_now()
     monotonic_start = time.perf_counter()
@@ -404,6 +470,15 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
     log_path = os.path.join(EXECUTION_LOG_DIR, log_name)
     log_handle = open(log_path, "w", encoding="utf-8", newline="\n")
 
+    # Validate and normalize arguments
+    if arguments is None:
+        arguments = []
+    elif not isinstance(arguments, list):
+        arguments = []
+    else:
+        # Ensure all arguments are strings
+        arguments = [str(arg) for arg in arguments if arg is not None]
+
     record = {
         "id": execution_id,
         "kind": kind,
@@ -411,6 +486,7 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
         "command": command_text,
         "shell": shell_cmd,
         "cwd": cwd,
+        "arguments": arguments,
         "started_at": started_at.isoformat(),
         "status": "running",
         "exit_code": None,
@@ -431,6 +507,8 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
         log_handle.write(f"shell: {shell_cmd}\n")
     if cwd:
         log_handle.write(f"cwd: {cwd}\n")
+    if arguments:
+        log_handle.write(f"arguments: {json.dumps(arguments)}\n")
     log_handle.write("\n")
     log_handle.flush()
 
@@ -442,6 +520,7 @@ def _start_execution_record(kind, display_name, command_text, shell_cmd="", cwd=
             "command": command_text,
             "shell": shell_cmd,
             "cwd": cwd,
+            "arguments": arguments,
             "started_at": started_at.isoformat(),
         },
         "events": [],
@@ -545,6 +624,7 @@ def _finalize_execution(
         "command": record["command"],
         "shell": record["shell"],
         "cwd": record["cwd"],
+        "arguments": record.get("arguments", []),
         "started_at": record["started_at"],
         "finished_at": record["finished_at"],
         "status": record["status"],
@@ -1712,6 +1792,7 @@ def _build_workspace_diagnostics(workspace_payload=None):
         'workspace_ok': True,
         'snapshot_corrupted': False,
         'replay_active_in_snapshot': False,
+        'has_integrity_warnings': False,
     }
 
     if not workspace_payload:
@@ -1735,6 +1816,12 @@ def _build_workspace_diagnostics(workspace_payload=None):
         }
 
     snapshot = workspace_payload.get('workspace', workspace_payload)
+    integrity = workspace_integrity_warnings(snapshot, workspace_payload.get('saved_at'))
+    if integrity:
+        warnings.extend(integrity)
+        indicators['workspace_ok'] = False
+        indicators['has_integrity_warnings'] = True
+
     if isinstance(snapshot, dict) and snapshot.get('replayState', {}).get('active'):
         indicators['replay_active_in_snapshot'] = True
         warnings.append('Last workspace snapshot had an active replay session.')
@@ -1752,7 +1839,22 @@ def _build_workspace_diagnostics(workspace_payload=None):
         'indicators': indicators,
         'saved_at': workspace_payload.get('saved_at'),
         'version': workspace_payload.get('version'),
+        'preview': _workspace_snapshot_preview(workspace_payload),
         'profile_corruption_count': len(profile_corruption),
+    }
+
+
+def _workspace_snapshot_preview(workspace_payload):
+    snapshot = workspace_payload.get('workspace', workspace_payload) if isinstance(workspace_payload, dict) else {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    terminals = snapshot.get('terminals') if isinstance(snapshot.get('terminals'), list) else []
+    return {
+        'workspace_name': workspace_payload.get('profile_name') or snapshot.get('workspaceName') or 'Recovered workspace',
+        'terminal_count': len(terminals),
+        'snapshot_timestamp': workspace_payload.get('saved_at'),
+        'has_replay': bool(snapshot.get('replayState', {}).get('active')) if isinstance(snapshot.get('replayState'), dict) else False,
+        'has_debug': bool(snapshot.get('debuggerVisible')),
     }
 
 
@@ -2288,6 +2390,7 @@ def parse_script_metadata(filepath):
         "name": os.path.basename(filepath).replace(".sh", "").replace("_", " ").title(),
         "desc": "",
         "tag": "",
+        "url": "",
         "path": filepath,
     }
     try:
@@ -2295,11 +2398,15 @@ def parse_script_metadata(filepath):
             for line in f:
                 line = line.strip()
                 if line.startswith("# name:"):
-                    metadata["name"] = line[7:].strip()
+                    name_val = line[7:].strip()
+                    if name_val:
+                        metadata["name"] = name_val
                 elif line.startswith("# desc:"):
                     metadata["desc"] = line[7:].strip()
                 elif line.startswith("# tag:"):
                     metadata["tag"] = line[6:].strip()
+                elif line.startswith("# url:"):
+                    metadata["url"] = line[6:].strip()
                 elif not line.startswith("#") and line:
                     break
     except Exception:  # nosec B110
@@ -2376,6 +2483,17 @@ def enforce_security():
             if any(b in user_agent for b in ['Mozilla', 'Chrome', 'Safari', 'Edge']):
                 abort(403)
 
+    # 3. JSON body validation. Many API handlers safely default missing JSON to
+    # an empty payload, but malformed JSON should fail before route logic runs.
+    if request.method in ['POST', 'PUT', 'DELETE', 'PATCH'] and request.is_json:
+        try:
+            request.get_json(silent=False)
+        except BadRequest:
+            return jsonify({
+                "success": False,
+                "error": "Invalid JSON payload",
+            }), 400
+
 # ─── Routes ───────────────────────────────────────────────────────
 
 
@@ -2438,6 +2556,31 @@ def clear_history():
             pass
         with open(FAILED_HISTORY_FILE, 'w', encoding='utf-8') as f:
             pass
+
+        # Clear execution logs
+        if os.path.exists(EXECUTION_LOG_DIR):
+            for filename in os.listdir(EXECUTION_LOG_DIR):
+                file_path = os.path.join(EXECUTION_LOG_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception:
+                    pass
+
+        # Clear session logs
+        if os.path.exists(SESSION_LOG_DIR):
+            for filename in os.listdir(SESSION_LOG_DIR):
+                file_path = os.path.join(SESSION_LOG_DIR, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception:
+                    pass
+
         return jsonify({
             'success': True,
             'message': 'Execution history cleared successfully'
@@ -2747,14 +2890,49 @@ def get_workspace_state():
 
 @app.route("/api/workspace", methods=["POST"])
 def persist_workspace_state():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     success, error = save_workspace_state(data)
     return jsonify({"success": success, "error": error})
 
 
+@app.route("/api/workspace/export", methods=["GET"])
+def export_workspace_state():
+    data = load_workspace_state()
+    if not data or data.get("corrupted"):
+        return jsonify({"success": False, "error": "No valid workspace snapshot to export"}), 404
+    body = json.dumps(data, indent=2)
+    return Response(
+        body,
+        mimetype="application/json",
+        headers={"Content-Disposition": "attachment; filename=devshell-workspace.json"},
+    )
+
+
+@app.route("/api/workspace/import", methods=["POST"])
+def import_workspace_state():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"success": False, "error": "Import must be a JSON object"}), 400
+
+    workspace = payload.get("workspace", payload)
+    valid, error = validate_workspace_snapshot(workspace)
+    if not valid:
+        return jsonify({"success": False, "error": error}), 400
+
+    success, error = save_workspace_state(workspace)
+    if not success:
+        return jsonify({"success": False, "error": error}), 500
+
+    stored = load_workspace_state()
+    return jsonify({
+        "success": True,
+        "diagnostics": _build_workspace_diagnostics(stored),
+    })
+
+
 @app.route("/api/workspace/profile", methods=["POST"])
 def save_workspace_profile():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip()
     workspace = data.get("workspace")
 
@@ -2815,7 +2993,7 @@ def delete_workspace_profile(name):
 
 @app.route("/api/scripts/content", methods=["POST"])
 def get_script_content():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     password = data.get("password", "")
 
@@ -3183,9 +3361,16 @@ def _cleanup_execution(
 
 @app.route("/api/scripts/run", methods=["POST"])
 def run_script():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     password = data.get("password", "")
+    # Accept arguments as a list (structured argv-style, not concatenated shell strings)
+    arguments = data.get("arguments", [])
+    if not isinstance(arguments, list):
+        arguments = []
+    else:
+        # Ensure all arguments are strings and safe
+        arguments = [str(arg) for arg in arguments if arg is not None]
 
     if not check_lock(rel_path, password):
         return jsonify({'error': 'Locked', 'success': False}), 401
@@ -3205,14 +3390,16 @@ def run_script():
         execution = None
         stop_event = threading.Event()
         t_reader = None
+        temp_path_created = None
         try:
-            # 1. Initialize execution record inside generator to prevent leaks if not iterated
+            # 1. Initialize execution record with arguments
             execution = _start_execution_record(
                 kind="script",
                 display_name=rel_path,
-                command_text=f"{shell_cmd} {full_path}",
+                command_text=f"{shell_cmd} {full_path}" + (f" {' '.join(arguments)}" if arguments else ""),
                 shell_cmd=shell_cmd,
                 cwd=SCRIPTS_DIR,
+                arguments=arguments,
             )
 
             # Instrument script content for progress tracking
@@ -3227,6 +3414,8 @@ def run_script():
                     temp_fd, temp_path = tempfile.mkstemp(
                         suffix=".sh", prefix=".tmp_run_", dir=temp_dir
                     )
+                    # Track created temp path so we can always clean it up
+                    temp_path_created = temp_path
                     with os.fdopen(
                         temp_fd, "w", encoding="utf-8", newline="\n"
                     ) as temp_f:
@@ -3241,13 +3430,15 @@ def run_script():
                 run_path = full_path
 
             # Use main's Windows support with your run_path
+            # CRITICAL: Append arguments to the args list (argv-style), NOT shell concatenation
+            # This prevents shell injection attacks
             args = (
-                [shell_cmd, run_path]
+                [shell_cmd, run_path] + arguments
                 if shell_cmd != "cmd.exe"
-                else ["cmd.exe", "/c", run_path]
+                else ["cmd.exe", "/c", run_path] + arguments
             )
 
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # nosec B603 - intentional local script execution
                 args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -3474,7 +3665,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=True,
                 error_message="Client disconnected",
                 stop_event=stop_event,
@@ -3487,7 +3678,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=False,
                 error_message="Execution timed out",
                 stop_event=stop_event,
@@ -3505,7 +3696,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 was_aborted=False,
                 error_message=str(e),
                 stop_event=stop_event,
@@ -3519,7 +3710,7 @@ def run_script():
                 proc,
                 execution,
                 run_id=run_id,
-                temp_path=run_path if run_path != full_path else None,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
                 stop_event=stop_event,
                 reader_thread=t_reader,
             )
@@ -3529,7 +3720,7 @@ def run_script():
 
 @app.route("/api/scripts/kill", methods=["POST"])
 def kill_script():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     run_id = data.get("run_id", "")
 
     if not run_id:
@@ -3549,10 +3740,20 @@ def kill_script():
     return jsonify({"success": True, "run_id": run_id})
 
 
+@app.route("/api/exec/check_lock", methods=["GET"])
+def check_terminal_lock():
+    locks = load_locks()
+    is_locked = "__terminal__" in locks
+    return jsonify({"locked": is_locked})
+
 @app.route("/api/exec", methods=["POST"])
 def exec_command():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     command = data.get("command", "")
+    password = data.get("password", "")
+
+    if not check_lock("__terminal__", password):
+        return jsonify({"error": "Terminal is locked", "success": False}), 401
 
     if not command:
         return jsonify({"error": "No command provided"}), 400
@@ -3754,7 +3955,7 @@ def exec_command():
 
 @app.route("/api/sessions/save", methods=["POST"])
 def save_session():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     session_data = data.get("session", {})
 
     try:
@@ -3784,7 +3985,7 @@ def restore_session():
 
 @app.route("/api/scripts/save", methods=["POST"])
 def save_script():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     category = data.get("category", "").strip()
     filename = data.get("filename", "").strip()
     content = data.get("content", "")
@@ -3818,7 +4019,7 @@ def save_script():
 
 @app.route("/api/scripts/delete", methods=["DELETE"])
 def delete_script():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     rel_path = request.args.get("path", "") or data.get("path", "")
     provided_pass = data.get("password", "")
 
@@ -3846,7 +4047,7 @@ def delete_script():
 
 @app.route("/api/scripts/favorite", methods=["POST"])
 def toggle_favorite():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     favs = load_favorites()
 
@@ -3863,7 +4064,7 @@ def toggle_favorite():
 
 @app.route("/api/scripts/lock", methods=["POST"])
 def manage_lock():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     old_pass = data.get("old_password", "")
     new_pass = data.get("new_password", "")  # empty string removes lock!
@@ -3894,7 +4095,7 @@ class BlockRedirectHandler(urllib.request.HTTPRedirectHandler):
         
 @app.route('/api/scripts/import_github', methods=['POST'])
 def import_github():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     url = data.get("url", "").strip()
     category = data.get("category", "").strip()
     filename = data.get("filename", "").strip()
@@ -3986,7 +4187,7 @@ def import_github():
 @app.route("/api/git/pr", methods=["POST"])
 def raise_pr():
     # Parse the request payload for the script path, branch, commit message, and optional target repo
-    data = request.json
+    data = request.get_json(silent=True) or {}
     rel_path = data.get("path", "")
     branch_name = data.get("branch", f"script-contribution-{str(uuid.uuid4())[:4]}")
     commit_msg = data.get("message", f"Contribution: {rel_path}")
