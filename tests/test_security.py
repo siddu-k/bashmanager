@@ -324,3 +324,33 @@ def test_exec_command_requires_terminal_unlock(app_module, client):
         resp = client.post("/api/exec", json={"command": "echo 1", "password": ""})
         assert resp.status_code == 401
 
+def test_delete_script_cleans_empty_category_dir(app_module, client, tmp_path):
+    # Setup tmp scripts dir
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    
+    # 1. Create a category with a single script (should delete category directory when script is deleted)
+    cat1 = scripts_dir / "cat1"
+    cat1.mkdir()
+    (cat1 / "script1.sh").write_text("echo hi")
+    
+    # 2. Create a category with two scripts (should NOT delete category directory when only one script is deleted)
+    cat2 = scripts_dir / "cat2"
+    cat2.mkdir()
+    (cat2 / "script1.sh").write_text("echo hi")
+    (cat2 / "script2.sh").write_text("echo bye")
+
+    with patch.object(app_module, "SCRIPTS_DIR", str(scripts_dir)):
+        with patch.object(app_module, "check_lock", return_value=True):
+            # Delete single script in cat1
+            resp1 = client.delete("/api/scripts/delete", json={"path": "cat1/script1.sh"})
+            assert resp1.status_code == 200
+            assert not (cat1 / "script1.sh").exists()
+            assert not cat1.exists()  # category directory should be deleted
+
+            # Delete one script in cat2
+            resp2 = client.delete("/api/scripts/delete", json={"path": "cat2/script1.sh"})
+            assert resp2.status_code == 200
+            assert not (cat2 / "script1.sh").exists()
+            assert cat2.exists()      # category directory should still exist
+            assert (cat2 / "script2.sh").exists()
