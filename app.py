@@ -4030,6 +4030,18 @@ def delete_script():
 
     if os.path.exists(full_path):
         os.remove(full_path)
+        # Clean up empty parent category directory (but not SCRIPTS_DIR itself)
+        parent_dir = os.path.dirname(full_path)
+        if (
+            parent_dir
+            and os.path.abspath(parent_dir) != os.path.abspath(SCRIPTS_DIR)
+            and os.path.isdir(parent_dir)
+            and not os.listdir(parent_dir)
+        ):
+            try:
+                os.rmdir(parent_dir)
+            except OSError as e:
+                logger.error(f"Failed to remove empty category folder: {e}")
         # Clean up favs
         favs = load_favorites()
         if rel_path in favs:
