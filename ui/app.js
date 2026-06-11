@@ -12,6 +12,9 @@ const API = {
     save: '/api/scripts/save',
     delete: '/api/scripts/delete',
     favorite: '/api/scripts/favorite',
+    versions: '/api/scripts/versions',
+    version_content: '/api/scripts/version',
+    rollback: '/api/scripts/rollback',
     exec: '/api/exec',
     exec_check_lock: '/api/exec/check_lock',
     lock: '/api/scripts/lock',
@@ -3617,7 +3620,9 @@ function bindEvents() {
 
     const btnPR = document.getElementById('btn-pr');
     if (btnPR) btnPR.addEventListener('click', () => { if (state.activeScript) raisePRFlow(state.activeScript); });
-    
+
+    const btnVersions = document.getElementById('btn-versions');
+    if (btnVersions) btnVersions.addEventListener('click', () => { if (state.activeScript) openVersionHistory(state.activeScript); });
 
     // Clear terminal
     document.getElementById('btn-clear').addEventListener('click', clearCli);
@@ -3801,6 +3806,15 @@ function bindEvents() {
                 executePR(state.activeScript, branch, message, repoUrl);
             }
         });
+    }
+
+    // Version History Modal
+    const versionsOverlay = document.getElementById('script-versions-modal-overlay');
+    if (versionsOverlay) {
+        const closeVersions = () => versionsOverlay.classList.remove('active');
+        document.getElementById('script-versions-modal-close').addEventListener('click', closeVersions);
+        document.getElementById('script-versions-modal-cancel').addEventListener('click', closeVersions);
+        versionsOverlay.addEventListener('click', (e) => { if (e.target.id === 'script-versions-modal-overlay') closeVersions(); });
     }
 
     // Lock Features
