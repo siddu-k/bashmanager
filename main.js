@@ -22,12 +22,10 @@ const SAFE_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:']);
 // We must preserve the python path to our bundled app or local python
 function resolvePythonCmd() {
     if (app.isPackaged) {
-        let pythonPath;
-        if (process.platform === 'win32') {
-            pythonPath = path.join(process.resourcesPath, 'python', 'python.exe');
-        } else {
-            pythonPath = path.join(process.resourcesPath, 'python', 'bin', 'python');
-        }
+        const pythonDir = path.join(process.resourcesPath, 'python');
+        const pythonPath = process.platform === 'win32'
+            ? path.join(pythonDir, 'python.exe')
+            : path.join(pythonDir, 'bin', 'python');
         if (!fs.existsSync(pythonPath)) {
             console.error(`Bundled Python interpreter not found at ${pythonPath}`);
             dialog.showErrorBox(
