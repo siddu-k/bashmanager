@@ -2704,23 +2704,23 @@ def run_script():
                             continue
 
                     # Heuristic to detect errors in the combined stream
-                    l_lower = line.lower()
-                    msg_type = "stdout"
-                    if any(
-                        err in l_lower
-                        for err in [
-                            "error:",
-                            "failed:",
-                            "not found",
-                            "denied",
-                            "no such file",
-                        ]
-                    ):
+                    from utils.errors import analyze_script_output_error
+                    analysis = analyze_script_output_error(line)
+                    if analysis:
                         msg_type = "error"
-                    _append_execution_line(execution, msg_type, line)
-                    yield "data: " + json.dumps(
-                        {"type": msg_type, "content": line}
-                    ) + "\n\n"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {"type": "error_analysis", "details": analysis}
+                        ) + "\n\n"
+                    else:
+                        msg_type = "stdout"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
                 except queue.Empty:
                     # Timeout reached, check if process died
                     if proc.poll() is not None:
@@ -2755,23 +2755,23 @@ def run_script():
                             ) + "\n\n"
                             continue
 
-                    l_lower = line.lower()
-                    msg_type = "stdout"
-                    if any(
-                        err in l_lower
-                        for err in [
-                            "error:",
-                            "failed:",
-                            "not found",
-                            "denied",
-                            "no such file",
-                        ]
-                    ):
+                    from utils.errors import analyze_script_output_error
+                    analysis = analyze_script_output_error(line)
+                    if analysis:
                         msg_type = "error"
-                    _append_execution_line(execution, msg_type, line)
-                    yield "data: " + json.dumps(
-                        {"type": msg_type, "content": line}
-                    ) + "\n\n"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {"type": "error_analysis", "details": analysis}
+                        ) + "\n\n"
+                    else:
+                        msg_type = "stdout"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
                 except queue.Empty:
                     break
 
@@ -3018,23 +3018,23 @@ def exec_command():
                     if line is SENTINEL:
                         break
 
-                    l_lower = line.lower()
-                    msg_type = "stdout"
-                    if any(
-                        err in l_lower
-                        for err in [
-                            "error:",
-                            "failed:",
-                            "not found",
-                            "denied",
-                            "no such file",
-                        ]
-                    ):
+                    from utils.errors import analyze_script_output_error
+                    analysis = analyze_script_output_error(line)
+                    if analysis:
                         msg_type = "error"
-                    _append_execution_line(execution, msg_type, line)
-                    yield "data: " + json.dumps(
-                        {"type": msg_type, "content": line}
-                    ) + "\n\n"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {"type": "error_analysis", "details": analysis}
+                        ) + "\n\n"
+                    else:
+                        msg_type = "stdout"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
                 except queue.Empty:
                     # Timeout reached, check if process died
                     if proc.poll() is not None:
@@ -3047,23 +3047,23 @@ def exec_command():
                     if line is SENTINEL:
                         break
 
-                    l_lower = line.lower()
-                    msg_type = "stdout"
-                    if any(
-                        err in l_lower
-                        for err in [
-                            "error:",
-                            "failed:",
-                            "not found",
-                            "denied",
-                            "no such file",
-                        ]
-                    ):
+                    from utils.errors import analyze_script_output_error
+                    analysis = analyze_script_output_error(line)
+                    if analysis:
                         msg_type = "error"
-                    _append_execution_line(execution, msg_type, line)
-                    yield "data: " + json.dumps(
-                        {"type": msg_type, "content": line}
-                    ) + "\n\n"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
+                        yield "data: " + json.dumps(
+                            {"type": "error_analysis", "details": analysis}
+                        ) + "\n\n"
+                    else:
+                        msg_type = "stdout"
+                        _append_execution_line(execution, msg_type, line)
+                        yield "data: " + json.dumps(
+                            {"type": msg_type, "content": line}
+                        ) + "\n\n"
                 except queue.Empty:
                     break
 
@@ -3104,7 +3104,7 @@ def exec_command():
                 reader_thread=t_reader,
             )
             raise
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             logger.warning(f"Command execution timed out (run_id: {run_id})")
             _cleanup_execution(
                 proc,
@@ -3114,8 +3114,10 @@ def exec_command():
                 error_message="Execution timed out",
                 reader_thread=t_reader,
             )
+            from utils.errors import ScriptTimeoutError, format_exception_details
+            details = format_exception_details(ScriptTimeoutError("Execution timed out"))
             yield "data: " + json.dumps(
-                {"type": "error", "content": "❌ Execution timed out\n"}
+                {"type": "error", "content": "❌ Execution timed out\n", "error_details": details}
             ) + "\n\n"
         except Exception as e:
             logger.error(
@@ -3130,8 +3132,10 @@ def exec_command():
                 error_message=str(e),
                 reader_thread=t_reader,
             )
+            from utils.errors import format_exception_details
+            details = format_exception_details(e)
             yield "data: " + json.dumps(
-                {"type": "error", "content": f"❌ Command Error: {str(e)}"}
+                {"type": "error", "content": f"❌ Command Error: {str(e)}", "error_details": details}
             ) + "\n\n"
         finally:
             _cleanup_execution(proc, execution, run_id=run_id, reader_thread=t_reader)
