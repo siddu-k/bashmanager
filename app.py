@@ -142,6 +142,11 @@ FAILURE_TYPES = {
     'missing_file': 'Required file not found',
     'interrupted': 'Execution interrupted by user',
     'unknown_failure': 'Unknown or unclassified failure',
+    'ERR_SCRIPT_SYNTAX': 'Syntax error in script',
+    'ERR_SCRIPT_PERMISSION': 'Permission denied',
+    'ERR_SCRIPT_NOT_FOUND': 'File or command not found',
+    'ERR_SCRIPT_TIMEOUT': 'Execution timed out',
+    'ERR_SCRIPT_RUNTIME': 'General runtime error',
 }
 
 SESSIONS_FILE = os.path.join(
@@ -2535,9 +2540,320 @@ def enforce_security():
             }), 400
 
 # ─── Routes ───────────────────────────────────────────────────────
+@app.route("/api/scripts/run", methods=["POST"])
+def run_script():
+    data = request.get_json(silent=True) or {}
+    rel_path = data.get("path", "")
+    password = data.get("password", "")
+    # Accept arguments as a list (structured argv-style, not concatenated shell strings)
+    arguments = data.get("arguments", [])
+    if not isinstance(arguments, list):
+        arguments = []
+    else:
+        # Ensure all arguments are strings and safe
+        arguments = [str(arg) for arg in arguments if arg is not None]
+
+    if not check_lock(rel_path, password):
+        return jsonify({'error': 'Locked', 'success': False}), 401
+        
+    full_path = str(validate_safe_path(SCRIPTS_DIR, rel_path))
+
+    if not os.path.exists(full_path):
+        return jsonify({"error": "Script not found"}), 404
+
+    run_id = str(uuid.uuid4())[:8]
+    shell_cmd = _find_shell()
+
+    def generate():
+        proc = None
+        run_path = full_path
+        start_time = time.perf_counter()
+        execution = None
+        stop_event = threading.Event()
+        t_reader = None
+        temp_path_created = None
+        try:
+            # 1. Initialize execution record with arguments
+            execution = _start_execution_record(
+                kind="script",
+                display_name=rel_path,
+                command_text=f"{shell_cmd} {full_path}" + (f" {' '.join(arguments)}" if arguments else ""),
+                shell_cmd=shell_cmd,
+                cwd=SCRIPTS_DIR,
+                arguments=arguments,
+            )
+
+            # Instrument script content for progress tracking
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+
+                instrumented_content, steps = instrument_script(content)
+
+                if steps:
+                    temp_dir = os.path.dirname(full_path)
+                    temp_fd, temp_path = tempfile.mkstemp(
+                        suffix=".sh", prefix=".tmp_run_", dir=temp_dir
+                    )
+                    # Track created temp path so we can always clean it up
+                    temp_path_created = temp_path
+                    with os.fdopen(
+                        temp_fd, "w", encoding="utf-8", newline="\n"
+                    ) as temp_f:
+                        temp_f.write(instrumented_content)
+
+                    run_path = temp_path
+                else:
+                    run_path = full_path
+
+            except Exception as e:
+                logger.error(f"Error instrumenting script: {e}")
+                run_path = full_path
+
+            # Use main's Windows support with your run_path
+            # CRITICAL: Append arguments to the args list (argv-style), NOT shell concatenation
+            # This prevents shell injection attacks
+            args = (
+                [shell_cmd, run_path] + arguments
+                if shell_cmd != "cmd.exe"
+                else ["cmd.exe", "/c", run_path] + arguments
+            )
+
+            proc = subprocess.Popen(  # nosec B603 - intentional local script execution
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                cwd=SCRIPTS_DIR,
+                bufsize=1,
+                universal_newlines=True,
+                shell=False
+            )  # nosec B603
+
+            with active_processes_lock:
+                active_processes[run_id] = {
+                    "process": proc,
+                    "execution": execution,
+                    "start_time": time.time(),
+                    "status": "running",
+                    "aborted": False,
+                    "stop_event": stop_event,
+                }
+
+            metrics = {"cpu": 0.0, "mem": 0.0}
+            t_metrics = threading.Thread(
+                target=_track_metrics, args=(proc, metrics, stop_event)
+            )
+            t_metrics.start()
+
+            _append_execution_line(
+                execution, "system", f"Starting script execution... (ID: {run_id})"
+            )
+            start_msg = f"Starting script execution... (ID: {run_id})\n"
+            yield "data: " + json.dumps(
+                {"type": "started", "run_id": run_id, "content": start_msg}
+            ) + "\n\n"
+
+            # Set up non-blocking stdout reading thread with sentinel
+            out_queue = queue.Queue()
+
+            def stream_reader(stream, q):
+                try:
+                    for line in iter(stream.readline, ""):
+                        q.put(line)
+                except Exception as e:
+                    logger.error(f"Reader thread error: {e}")
+                finally:
+                    q.put(SENTINEL)
+                    try:
+                        stream.close()
+                    except Exception:  # nosec B110
+                        pass
+
+            t_reader = threading.Thread(
+                target=stream_reader, args=(proc.stdout, out_queue), daemon=True
+            )
+            t_reader.start()
+
+            while True:
+                try:
+                    line = out_queue.get(timeout=0.2)
+                    if line is SENTINEL:
+                        break
+
+                    if run_path != full_path:
+                        temp_basename = os.path.basename(run_path)
+                        orig_basename = os.path.basename(full_path)
+                        if temp_basename in line:
+                            line = line.replace(temp_basename, orig_basename)
+
+                    if "::progress::" in line:
+                        match = re.search(r"::progress::(\d+)::(\d+)::(.*)", line)
+                        if match:
+                            step_idx = int(match.group(1))
+                            total_steps = int(match.group(2))
+                            cmd_text = match.group(3).strip()
+                            yield "data: " + json.dumps(
+                                {
+                                    "type": "progress",
+                                    "step": step_idx,
+                                    "total": total_steps,
+                                    "command": cmd_text,
+                                }
+                            ) + "\n\n"
+                            continue
+
+                    # Heuristic to detect errors in the combined stream
+                    l_lower = line.lower()
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
+                    _append_execution_line(execution, msg_type, line)
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    # Timeout reached, check if process died
+                    if proc.poll() is not None:
+                        break
+
+            # Process finished. Re-check the queue to drain any remaining outputs
+            while True:
+                try:
+                    line = out_queue.get_nowait()
+                    if line is SENTINEL:
+                        break
+
+                    if run_path != full_path:
+                        temp_basename = os.path.basename(run_path)
+                        orig_basename = os.path.basename(full_path)
+                        if temp_basename in line:
+                            line = line.replace(temp_basename, orig_basename)
+
+                    if "::progress::" in line:
+                        match = re.search(r"::progress::(\d+)::(\d+)::(.*)", line)
+                        if match:
+                            step_idx = int(match.group(1))
+                            total_steps = int(match.group(2))
+                            cmd_text = match.group(3).strip()
+                            yield "data: " + json.dumps(
+                                {
+                                    "type": "progress",
+                                    "step": step_idx,
+                                    "total": total_steps,
+                                    "command": cmd_text,
+                                }
+                            ) + "\n\n"
+                            continue
+
+                    l_lower = line.lower()
+                    msg_type = "stdout"
+                    if any(
+                        err in l_lower
+                        for err in [
+                            "error:",
+                            "failed:",
+                            "not found",
+                            "denied",
+                            "no such file",
+                        ]
+                    ):
+                        msg_type = "error"
+                    _append_execution_line(execution, msg_type, line)
+                    yield "data: " + json.dumps(
+                        {"type": msg_type, "content": line}
+                    ) + "\n\n"
+                except queue.Empty:
+                    break
+
+            proc.wait(timeout=5)
+            t_metrics.join(timeout=1.0)
+            t_reader.join(timeout=1.0)
+
+            end_time = time.perf_counter()
+            elapsed = end_time - start_time
+
+            was_aborted = False
+            with active_processes_lock:
+                entry = active_processes.get(run_id)
+                if entry and entry.get("aborted"):
+                    was_aborted = True
+
+            if was_aborted:
+                _append_execution_line(
+                    execution, "system", f"Script aborted (exit code {proc.returncode})"
+                )
+                _finalize_execution(
+                    execution,
+                    success=False,
+                    exit_code=proc.returncode if proc.returncode is not None else -15,
+                    duration_seconds=elapsed,
+                    error_message="Script aborted by user",
+                )
+                abort_msg = 'Script aborted\n'
+                yield f"data: {json.dumps({'type': 'aborted', 'run_id': run_id, 'content': abort_msg})}\n\n"
+            else:
+                system_mem = psutil.virtual_memory().total / (1024 * 1024)
+                mem_percent = (
+                    (metrics["mem"] / system_mem * 100) if system_mem > 0 else 0
+                )
+
+                resource_info = {
+                    "execution_time": round(elapsed, 3),
+                    "execution_time_formatted": _format_time(elapsed),
+                    "exit_code": proc.returncode,
+                    "cpu_percent": metrics["cpu"],
+                    "memory_used_mb": metrics["mem"],
+                    "memory_total_mb": round(system_mem, 1),
+                    "memory_percent": round(mem_percent, 2),
+                }
+
+                _append_execution_line(
+                    execution,
+                    "system",
+                    f"Script completed with exit code {proc.returncode}",
+                )
+                _finalize_execution(
+                    execution,
+                    success=proc.returncode == 0,
+                    exit_code=proc.returncode,
+                    duration_seconds=elapsed,
+                    resource_usage=resource_info,
+                )
+                yield "data: " + json.dumps(
+                    {
+                        "type": "metrics",
+                        "resources": resource_info,
+                        "exit_code": proc.returncode,
+                        "success": proc.returncode == 0,
+                    }
+                ) + "\n\n"
+
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError) as e:
+            logger.info(
+                f"SSE script client disconnected or pipe broken (run_id: {run_id}): {type(e).__name__}"
+            )
+            _cleanup_execution(
+                proc,
+                execution,
+                run_id=run_id,
+                temp_path=(temp_path_created if temp_path_created is not None else (run_path if run_path != full_path else None)),
+                was_aborted=True,
+                error_message="Client disconnected",
+                stop_event=stop_event,
+                reader_thread=t_reader,
             )
             raise
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as e:
             logger.warning(f"Script run_id {run_id} execution timed out")
             _cleanup_execution(
                 proc,
@@ -2549,8 +2865,10 @@ def enforce_security():
                 stop_event=stop_event,
                 reader_thread=t_reader,
             )
+            from utils.errors import ScriptTimeoutError, format_exception_details
+            details = format_exception_details(ScriptTimeoutError("Execution timed out"))
             yield "data: " + json.dumps(
-                {"type": "error", "content": "❌ Execution timed out\n"}
+                {"type": "error", "content": "❌ Execution timed out\n", "error_details": details}
             ) + "\n\n"
         except Exception as e:
             logger.error(
@@ -2567,8 +2885,10 @@ def enforce_security():
                 stop_event=stop_event,
                 reader_thread=t_reader,
             )
+            from utils.errors import format_exception_details
+            details = format_exception_details(e)
             yield "data: " + json.dumps(
-                {"type": "error", "content": f"❌ Execution Error: {str(e)}"}
+                {"type": "error", "content": f"❌ Execution Error: {str(e)}", "error_details": details}
             ) + "\n\n"
         finally:
             _cleanup_execution(
@@ -2581,6 +2901,7 @@ def enforce_security():
             )
 
     return Response(generate(), mimetype="text/event-stream")
+
 
 
 @app.route("/api/scripts/kill", methods=["POST"])
