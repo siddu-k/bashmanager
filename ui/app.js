@@ -81,24 +81,43 @@ let state = {
     reliabilityDiagnostics: null,
 };
 
-const unlockCredentials = new Map();
+// ─── Cryptography & Credentials ─────────────────────────────
+
+async function hashPassword(plainText) {
+    if (!plainText) return '';
+    const encoder = new TextEncoder();
+    const data = encoder.encode(plainText);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+const CredentialStore = (() => {
+    const store = new Map();
+    return {
+        set: (path, passHash) => store.set(path, passHash),
+        get: (path) => store.get(path) || '',
+        delete: (path) => store.delete(path),
+        clear: () => store.clear()
+    };
+})();
 
 function isScriptUnlocked(relPath) {
     return !!state.unlockedScripts[relPath];
 }
 
 function getUnlockPassword(relPath) {
-    return unlockCredentials.get(relPath) || '';
+    return CredentialStore.get(relPath);
 }
 
-function markScriptUnlocked(relPath, password) {
+function markScriptUnlocked(relPath, passHash) {
     state.unlockedScripts[relPath] = true;
-    if (password) unlockCredentials.set(relPath, password);
+    if (passHash) CredentialStore.set(relPath, passHash);
 }
 
 function clearScriptUnlock(relPath) {
     delete state.unlockedScripts[relPath];
-    unlockCredentials.delete(relPath);
+    CredentialStore.delete(relPath);
 }
 
 function serializeUnlockedScripts() {
@@ -114,7 +133,7 @@ function restoreUnlockedScripts(raw = {}) {
     for (const [path, val] of Object.entries(raw)) {
         if (val) state.unlockedScripts[path] = true;
     }
-    unlockCredentials.clear();
+    CredentialStore.clear();
 }
 
 const RUN_BUTTON_IDLE_HTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg><span>Run</span>`;
@@ -3080,11 +3099,12 @@ async function selectScript(relPath) {
         unlockBtn.parentNode.replaceChild(newUnlockBtn, unlockBtn);
 
         const unlockAction = async () => {
-            const content = await fetchScriptContent(relPath, passInput.value);
+            const passHash = await hashPassword(passInput.value);
+            const content = await fetchScriptContent(relPath, passHash);
             if (content.locked) {
                 notify('Incorrect password.', 'error');
             } else {
-                markScriptUnlocked(relPath, passInput.value);
+                markScriptUnlocked(relPath, passHash);
                 passInput.value = '';
                 selectScript(relPath);
             }
@@ -3902,14 +3922,14 @@ function bindEvents() {
                 }
             }
 
-            let oldPass = '', newPass = '';
+            let oldPassPlain = '', newPassPlain = '';
             if (isLocked) {
-                oldPass = document.getElementById('lock-current-pass').value;
-                newPass = ''; // meaning remove lock
+                oldPassPlain = document.getElementById('lock-current-pass').value;
+                newPassPlain = ''; // meaning remove lock
             } else {
-                oldPass = '';
-                newPass = document.getElementById('lock-new-pass').value;
-                if (!newPass) {
+                oldPassPlain = '';
+                newPassPlain = document.getElementById('lock-new-pass').value;
+                if (!newPassPlain) {
                     return notify('Password cannot be empty when setting a lock.', 'warning');
                 }
             }
