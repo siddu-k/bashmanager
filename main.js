@@ -229,32 +229,4 @@ function startFlaskServer(port) {
 }
 
 app.whenReady().then(async () => {
-    try {
-        const port = await resolvePort();
-        activePort = port;
-        startFlaskServer(port);
-        createWindow(port);
-    } catch (err) {
-        showStartupError('DevShell failed to start', err.message);
-        app.quit();
-    }
-});
-
-app.on('window-all-closed', function () {
-    if (process.platform !== 'darwin') {
-        app.quit();
-    }
-});
-
-app.on('activate', function () {
-    if (mainWindow === null && activePort) {
-        createWindow(activePort);
-    }
-});
-
-app.on('will-quit', () => {
-    clearStartupTimers();
-    if (flaskProcess) {
-        flaskProcess.kill();
-    }
-});
+.catch(err => console.error(err))
