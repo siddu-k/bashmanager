@@ -5061,7 +5061,7 @@ function startHeaderClock() {
     updateClock();
 
     // Hook up the optimized 1000ms execution loop lifecycle track
-    setInterval(updateClock, 1000);
+    clearInterval(window.__interval); window.__interval = setInterval(updateClock, 1000);
 // Global page lifecycle listeners for SSE resource cleanup
 if (!window.hasRegisteredLifecycleCleanup) {
     window.hasRegisteredLifecycleCleanup = true;
