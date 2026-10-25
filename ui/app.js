@@ -1193,7 +1193,11 @@ async function executeScriptWithArguments(relPath, argumentsText) {
         }
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
-            throw new Error(data.error || `Script run failed with HTTP ${res.status}`);
+            let errMsg = data.error || `Script run failed with HTTP ${res.status}`;
+            if (data.error_details && data.error_details.suggestion) {
+                errMsg += ` (Suggestion: ${data.error_details.suggestion})`;
+            }
+            throw new Error(errMsg);
         }
 
         if (!res.body) {
@@ -1234,10 +1238,20 @@ async function executeScriptWithArguments(relPath, argumentsText) {
                                     appendToCli(data.content, 'system', termId);
                                 } else if (data.type === 'stdout' || data.type === 'error' || data.type === 'system') {
                                     let cssClass = data.type === 'stdout' ? 'stdout' : (data.type === 'system' ? 'system' : 'stderr');
-                                    appendToCli(data.content, cssClass, termId);
+                                    let outputText = data.content;
+                                    if (data.error_details && data.error_details.suggestion) {
+                                        outputText += `\n💡 Suggestion: ${data.error_details.suggestion}`;
+                                    }
+                                    appendToCli(outputText, cssClass, termId);
                                     if (typeof DebuggerConsole !== 'undefined') {
                                         const dbgType = data.type === 'error' ? 'error' : 'log';
-                                        DebuggerConsole.addEntry(dbgType, data.content.trimEnd(), relPath);
+                                        DebuggerConsole.addEntry(dbgType, outputText.trimEnd(), relPath);
+                                    }
+                                } else if (data.type === 'error_analysis') {
+                                    const analysisText = `[Analysis] ${data.details.message}\n💡 Suggestion: ${data.details.suggestion}`;
+                                    appendToCli(analysisText, 'stderr', termId);
+                                    if (typeof DebuggerConsole !== 'undefined') {
+                                        DebuggerConsole.addEntry('error', analysisText, relPath);
                                     }
                                 } else if (data.type === 'progress') {
                                     const runState = state.runningScripts[termId];
