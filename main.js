@@ -21,16 +21,33 @@ const SAFE_EXTERNAL_PROTOCOLS = new Set(['http:', 'https:']);
 
 // We must preserve the python path to our bundled app or local python
 function resolvePythonCmd() {
-    const venv = process.env.VIRTUAL_ENV;
-    if (venv) {
-        const venvPython = process.platform === 'win32'
-            ? path.join(venv, 'Scripts', 'python.exe')
-            : path.join(venv, 'bin', 'python');
-        if (fs.existsSync(venvPython)) {
-            return venvPython;
+    if (app.isPackaged) {
+        const pythonDir = path.join(process.resourcesPath, 'python');
+        const pythonPath = process.platform === 'win32'
+            ? path.join(pythonDir, 'python.exe')
+            : path.join(pythonDir, 'bin', 'python');
+        if (!fs.existsSync(pythonPath)) {
+            console.error(`Bundled Python interpreter not found at ${pythonPath}`);
+            dialog.showErrorBox(
+                'DevShell Error',
+                'Bundled Python resources are missing. Please reinstall the application.'
+            );
+            app.quit();
         }
+        return pythonPath;
+    } else {
+        // Development mode: retain existing logic for VIRTUAL_ENV
+        const venv = process.env.VIRTUAL_ENV;
+        if (venv) {
+            const venvPython = process.platform === 'win32'
+                ? path.join(venv, 'Scripts', 'python.exe')
+                : path.join(venv, 'bin', 'python');
+            if (fs.existsSync(venvPython)) {
+                return venvPython;
+            }
+        }
+        return process.platform === 'win32' ? 'python' : 'python3';
     }
-    return process.platform === 'win32' ? 'python' : 'python3';
 }
 
 const pythonCmd = resolvePythonCmd();
